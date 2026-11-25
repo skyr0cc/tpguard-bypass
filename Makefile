@@ -1,5 +1,6 @@
 CXX := x86_64-w64-mingw32-g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wpedantic -mwindows -municode -O2
+LDFLAGS := -static -static-libgcc -static-libstdc++
 LDLIBS := -lws2_32 -luser32 -lgdi32 -lshell32 -lgdiplus
 
 TARGET := build/skyro_wtf.exe
@@ -11,7 +12,7 @@ all: $(TARGET)
 
 $(TARGET): $(SOURCE)
 	mkdir -p build/assets
-	$(CXX) $(CXXFLAGS) $(SOURCE) -o $(TARGET) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(SOURCE) -o $(TARGET) $(LDLIBS)
 	cp -R assets/. build/assets/
 
 clean:

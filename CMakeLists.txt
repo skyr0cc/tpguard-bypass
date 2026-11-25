@@ -10,10 +10,10 @@ add_executable(skyro_wtf WIN32 src/skyro_wtf.cpp)
 target_compile_definitions(skyro_wtf PRIVATE UNICODE _UNICODE)
 
 if(MSVC)
-    target_compile_options(skyro_wtf PRIVATE /W4 /permissive-)
+    target_compile_options(skyro_wtf PRIVATE /W4 /permissive- /MT)
 else()
     target_compile_options(skyro_wtf PRIVATE -Wall -Wextra -Wpedantic -municode)
-    target_link_options(skyro_wtf PRIVATE -municode)
+    target_link_options(skyro_wtf PRIVATE -municode -static -static-libgcc -static-libstdc++)
 endif()
 
 target_link_libraries(skyro_wtf PRIVATE

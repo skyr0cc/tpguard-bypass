@@ -92,6 +92,12 @@ Executor hook coverage:
 - All hook setup wrapped in `pcall`, so auto execute keeps running if one hook is unavailable.
 - No varargs in the generated script, which keeps it portable across the executor Lua variants that lack `table.pack`.
 
+## Runtime dependencies
+
+The executable is linked statically. No `libgcc_s_seh-1.dll`, `libstdc++-6.dll`, or `libwinpthread-1.dll` ships with it. The only imports are Windows system DLLs: `KERNEL32.dll`, `USER32.dll`, `GDI32.dll`, `SHELL32.dll`, `WS2_32.dll`, `gdiplus.dll`, `msvcrt.dll`. Copy `build/skyro_wtf.exe` and `build/assets/` to a machine and it runs without a MinGW runtime install.
+
+MSVC builds use `/MT`; MinGW builds use `-static -static-libgcc -static-libstdc++`.
+
 ## Notes
 
 - Port changes require `STOP SERVER` then `START SERVER`; the listener reads the port once at bind time.
