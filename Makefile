@@ -1,7 +1,7 @@
 CXX := x86_64-w64-mingw32-g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wpedantic -mwindows -municode -O2 -Ivendor/imgui
 LDFLAGS := -static -static-libgcc -static-libstdc++
-LDLIBS := -lws2_32 -luser32 -lgdi32 -lshell32 -lgdiplus -ld3d11 -ldxgi -ld3dcompiler -ldwmapi
+LDLIBS := -luser32 -lgdi32 -lgdiplus -ld3d11 -ldxgi -ld3dcompiler -ldwmapi
 
 TARGET := build/skyro_wtf.exe
 

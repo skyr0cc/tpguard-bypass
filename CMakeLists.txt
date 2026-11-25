@@ -26,10 +26,8 @@ else()
 endif()
 
 target_link_libraries(skyro_wtf PRIVATE
-    ws2_32
     user32
     gdi32
-    shell32
     gdiplus
     d3d11
     dxgi
