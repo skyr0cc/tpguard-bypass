@@ -5,8 +5,17 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_executable(skyro_wtf WIN32 src/skyro_wtf.cpp)
+add_executable(skyro_wtf WIN32
+    src/skyro_wtf.cpp
+    vendor/imgui/imgui.cpp
+    vendor/imgui/imgui_draw.cpp
+    vendor/imgui/imgui_tables.cpp
+    vendor/imgui/imgui_widgets.cpp
+    vendor/imgui/backends/imgui_impl_win32.cpp
+    vendor/imgui/backends/imgui_impl_dx11.cpp
+)
 
+target_include_directories(skyro_wtf PRIVATE vendor/imgui)
 target_compile_definitions(skyro_wtf PRIVATE UNICODE _UNICODE)
 
 if(MSVC)
@@ -22,6 +31,10 @@ target_link_libraries(skyro_wtf PRIVATE
     gdi32
     shell32
     gdiplus
+    d3d11
+    dxgi
+    d3dcompiler
+    dwmapi
 )
 
 add_custom_command(TARGET skyro_wtf POST_BUILD

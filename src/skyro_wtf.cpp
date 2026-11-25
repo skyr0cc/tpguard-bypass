@@ -7,10 +7,18 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <gdiplus.h>
+#include <d3d11.h>
+#include <dxgi.h>
 
 #ifdef _MSC_VER
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
 #endif
+
+#include "imgui.h"
+#include "backends/imgui_impl_win32.h"
+#include "backends/imgui_impl_dx11.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -22,25 +30,16 @@
 #include <string>
 #include <thread>
 
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
+
 namespace {
 
-constexpr COLORREF kBackground = RGB(13, 6, 24);
-constexpr COLORREF kPanel = RGB(25, 12, 44);
-constexpr COLORREF kPanelAlt = RGB(34, 17, 58);
-constexpr COLORREF kPurple = RGB(177, 79, 255);
-constexpr COLORREF kPurpleDeep = RGB(104, 41, 176);
-constexpr COLORREF kWhite = RGB(247, 244, 255);
-constexpr COLORREF kMuted = RGB(154, 139, 184);
-
-constexpr int kIdPlace = 101;
-constexpr int kIdPort = 102;
-constexpr int kIdRetries = 103;
-constexpr int kIdDelay = 104;
-constexpr int kIdScript = 105;
-constexpr int kIdToggle = 201;
-constexpr int kIdStart = 202;
-constexpr int kIdCopy = 203;
-constexpr int kTimerStatus = 1;
+constexpr int kPortMin = 1;
+constexpr int kPortMax = 65535;
+constexpr int kRetriesMin = 1;
+constexpr int kRetriesMax = 1000;
+constexpr int kDelayMin = 50;
+constexpr int kDelayMax = 60000;
 
 struct Config {
     std::wstring placeId = L"109983668079237";
@@ -55,6 +54,8 @@ Config g_config;
 
 std::atomic<bool> g_stop{false};
 std::atomic<bool> g_serverRunning{false};
+std::atomic<int> g_captured{0};
+std::atomic<int> g_attempts{0};
 std::thread g_serverThread;
 std::thread g_workerThread;
 
@@ -64,31 +65,41 @@ std::queue<std::wstring> g_jobs;
 
 std::mutex g_statusMutex;
 std::wstring g_status = L"idle";
+std::mutex g_lastJobMutex;
+std::wstring g_lastJob = L"none";
 
-HWND g_window = nullptr;
-HFONT g_uiFont = nullptr;
-HFONT g_monoFont = nullptr;
-HBRUSH g_panelBrush = nullptr;
-HBRUSH kaltBrush = nullptr;
-HBRUSH g_bgBrush = nullptr;
-Gdiplus::Image* g_background = nullptr;
+ID3D11Device* g_device = nullptr;
+ID3D11DeviceContext* g_context = nullptr;
+IDXGISwapChain* g_swapChain = nullptr;
+ID3D11RenderTargetView* g_renderTarget = nullptr;
+ID3D11ShaderResourceView* g_background = nullptr;
 ULONG_PTR g_gdiplusToken = 0;
+HWND g_window = nullptr;
 
-void LoadBackground() {
-    wchar_t modulePath[MAX_PATH] = {};
-    if (!GetModuleFileNameW(nullptr, modulePath, MAX_PATH)) return;
-    std::wstring path(modulePath);
-    size_t slash = path.find_last_of(L"\\/");
-    if (slash == std::wstring::npos) return;
-    path.resize(slash + 1);
-    path += L"assets\\login.jpg";
+char g_placeBuffer[64] = "109983668079237";
+char g_portBuffer[16] = "6969";
+char g_retriesBuffer[16] = "10";
+char g_delayBuffer[16] = "1500";
+char g_scriptBuffer[16384] = "";
 
-    Gdiplus::Image* image = new Gdiplus::Image(path.c_str());
-    if (image->GetLastStatus() == Gdiplus::Ok) {
-        g_background = image;
-    } else {
-        delete image;
-    }
+ImFont* g_uiFont = nullptr;
+ImFont* g_monoFont = nullptr;
+
+std::wstring Utf8ToWide(const char* text) {
+    if (!text) return L"";
+    int needed = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+    if (needed <= 0) return L"";
+    std::wstring wide(static_cast<size_t>(needed) - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text, -1, &wide[0], needed);
+    return wide;
+}
+
+std::string WideToUtf8(const std::wstring& text) {
+    int needed = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+    if (needed <= 0) return "";
+    std::string narrow(static_cast<size_t>(needed), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), &narrow[0], needed, nullptr, nullptr);
+    return narrow;
 }
 
 std::wstring Trim(const std::wstring& text) {
@@ -99,12 +110,11 @@ std::wstring Trim(const std::wstring& text) {
     return std::wstring(start, end);
 }
 
-int ParseBoundedInt(const std::wstring& text, int fallback, int low, int high) {
-    std::wstring clean = Trim(text);
-    if (clean.empty()) return fallback;
-    wchar_t* tail = nullptr;
-    long value = std::wcstol(clean.c_str(), &tail, 10);
-    if (tail == clean.c_str() || *tail != L'\0') return fallback;
+int ParseBoundedInt(const char* text, int fallback, int low, int high) {
+    if (!text || !*text) return fallback;
+    char* tail = nullptr;
+    long value = std::strtol(text, &tail, 10);
+    if (tail == text || *tail != '\0') return fallback;
     if (value < low) return low;
     if (value > high) return high;
     return static_cast<int>(value);
@@ -118,6 +128,16 @@ void SetStatus(const std::wstring& value) {
 std::wstring GetStatus() {
     std::lock_guard<std::mutex> lock(g_statusMutex);
     return g_status;
+}
+
+void SetLastJob(const std::wstring& value) {
+    std::lock_guard<std::mutex> lock(g_lastJobMutex);
+    g_lastJob = value;
+}
+
+std::wstring GetLastJob() {
+    std::lock_guard<std::mutex> lock(g_lastJobMutex);
+    return g_lastJob;
 }
 
 void ReplaceAll(std::wstring& text, const std::wstring& from, const std::wstring& to) {
@@ -142,9 +162,13 @@ local ENDPOINT = "http://127.0.0.1:" .. PORT .. "/job"
 local Http = game:GetService("HttpService")
 local TS = game:GetService("TeleportService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ReplicatedFirst = game:GetService("ReplicatedFirst")
 
 local seen = {}
 local cacheCount = 0
+local running = true
+local connections = {}
 
 local function isJobId(value)
     if type(value) ~= "string" then return false end
@@ -206,57 +230,69 @@ local function handle(value)
     pcall(deepLink, value)
 end
 
-local function scan(value)
-    if isJobId(value) then
+local function scanValue(value)
+    if type(value) == "string" then
         handle(value)
         return
     end
     if type(value) == "table" then
         for key, item in pairs(value) do
-            if isJobId(item) then handle(item) end
+            if type(item) == "string" then handle(item) end
         end
     end
 end
 
-pcall(function()
-    if hookfunction then
-        local originalTeleport = hookfunction(TS.TeleportToPlaceInstance, function(self, placeId, jobId, player, spawnName, teleportData, customData, extra)
-            if jobId then handle(tostring(jobId)) end
-            return originalTeleport(self, placeId, jobId, player, spawnName, teleportData, customData, extra)
+local function scanInstance(instance)
+    local kindOk, kind = pcall(function() return instance.ClassName end)
+    if not kindOk then return end
+    if kind == "StringValue" or kind == "TextBox" or kind == "TextLabel" then
+        local valueOk, content = pcall(function()
+            if kind == "StringValue" then return instance.Value end
+            return instance.Text
         end)
-        if TS.TeleportToPlaceInstanceAsync then
-            local originalAsync = hookfunction(TS.TeleportToPlaceInstanceAsync, function(self, placeId, jobId, player, spawnName, teleportData, customData, extra)
-                if jobId then handle(tostring(jobId)) end
-                return originalAsync(self, placeId, jobId, player, spawnName, teleportData, customData, extra)
-            end)
-        end
-    else
-        local originalTeleport = TS.TeleportToPlaceInstance
-        TS.TeleportToPlaceInstance = function(self, placeId, jobId, player, spawnName, teleportData, customData, extra)
-            if jobId then handle(tostring(jobId)) end
-            return originalTeleport(self, placeId, jobId, player, spawnName, teleportData, customData, extra)
-        end
-        if TS.TeleportToPlaceInstanceAsync then
-            local originalAsync = TS.TeleportToPlaceInstanceAsync
-            TS.TeleportToPlaceInstanceAsync = function(self, placeId, jobId, player, spawnName, teleportData, customData, extra)
-                if jobId then handle(tostring(jobId)) end
-                return originalAsync(self, placeId, jobId, player, spawnName, teleportData, customData, extra)
-            end
-        end
+        if valueOk then scanValue(content) end
     end
-end)
+    local attrOk, attrs = pcall(function() return instance:GetAttributes() end)
+    if attrOk then scanValue(attrs) end
+end
 
-pcall(function()
-    if hookmetamethod and getrawmetatable then
-        local mt = getrawmetatable(game)
-        if mt then
-            if setreadonly then setreadonly(mt, false) end
-            local originalNamecall = hookmetamethod(game, "__namecall", function(self, a, b, c, d, e, f, g, h, i, j, k, l)
-                scan(a); scan(b); scan(c); scan(d); scan(e); scan(f); scan(g); scan(h); scan(i); scan(j); scan(k); scan(l)
-                return originalNamecall(self, a, b, c, d, e, f, g, h, i, j, k, l)
-            end)
-            if setreadonly then setreadonly(mt, true) end
-        end
+local function scanTree(root, limit)
+    if not root then return end
+    local listOk, items = pcall(function() return root:GetDescendants() end)
+    if not listOk then return end
+    local scanned = 0
+    for index = 1, #items do
+        if scanned >= limit then return end
+        scanInstance(items[index])
+        scanned = scanned + 1
+    end
+end
+
+local function watch(root)
+    if not root then return end
+    local addedOk, connection = pcall(function() return root.DescendantAdded:Connect(scanInstance) end)
+    if addedOk then table.insert(connections, connection) end
+end
+
+watch(ReplicatedStorage)
+watch(ReplicatedFirst)
+watch(Players)
+
+local playerOk, playerConnection = pcall(function()
+    return Players.PlayerAdded:Connect(function(player)
+        local attrOk, attrs = pcall(function() return player:GetAttributes() end)
+        if attrOk then scanValue(attrs) end
+    end)
+end)
+if playerOk then table.insert(connections, playerConnection) end
+
+spawn(function()
+    while running do
+        handle(game.JobId)
+        scanTree(ReplicatedStorage, 400)
+        scanTree(ReplicatedFirst, 200)
+        scanTree(Players, 200)
+        wait(0.5)
     end
 end)
 )lua";
@@ -268,43 +304,40 @@ end)
     return script;
 }
 
-void RefreshScript() {
-    HWND edit = GetDlgItem(g_window, kIdScript);
-    if (!edit) return;
+void RefreshScriptBuffer() {
     Config cfg;
     {
         std::lock_guard<std::mutex> lock(g_configMutex);
         cfg = g_config;
     }
-    SetWindowTextW(edit, BuildScript(cfg).c_str());
+    std::string narrow = WideToUtf8(BuildScript(cfg));
+    if (narrow.size() >= sizeof(g_scriptBuffer)) narrow.resize(sizeof(g_scriptBuffer) - 1);
+    std::memcpy(g_scriptBuffer, narrow.c_str(), narrow.size() + 1);
 }
 
-void ReadConfigFromControls() {
-    HWND place = GetDlgItem(g_window, kIdPlace);
-    HWND port = GetDlgItem(g_window, kIdPort);
-    HWND retries = GetDlgItem(g_window, kIdRetries);
-    HWND delay = GetDlgItem(g_window, kIdDelay);
-    if (!place || !port || !retries || !delay) return;
-
-    wchar_t buffer[128] = {};
+void SyncConfigFromUi() {
     Config cfg;
-    GetWindowTextW(place, buffer, 128);
-    cfg.placeId = Trim(buffer);
-    if (cfg.placeId.empty()) cfg.placeId = L"109983668079237";
-
-    GetWindowTextW(port, buffer, 128);
-    cfg.port = ParseBoundedInt(buffer, 6969, 1, 65535);
-    GetWindowTextW(retries, buffer, 128);
-    cfg.retries = ParseBoundedInt(buffer, 10, 1, 1000);
-    GetWindowTextW(delay, buffer, 128);
-    cfg.delayMs = ParseBoundedInt(buffer, 1500, 50, 60000);
-
     {
         std::lock_guard<std::mutex> lock(g_configMutex);
-        cfg.enabled = g_config.enabled;
-        g_config = cfg;
+        cfg = g_config;
     }
-    RefreshScript();
+
+    std::wstring place = Trim(Utf8ToWide(g_placeBuffer));
+    if (place.empty()) place = L"109983668079237";
+    int port = ParseBoundedInt(g_portBuffer, cfg.port, kPortMin, kPortMax);
+    int retries = ParseBoundedInt(g_retriesBuffer, cfg.retries, kRetriesMin, kRetriesMax);
+    int delay = ParseBoundedInt(g_delayBuffer, cfg.delayMs, kDelayMin, kDelayMax);
+
+    if (place != cfg.placeId || port != cfg.port || retries != cfg.retries || delay != cfg.delayMs) {
+        {
+            std::lock_guard<std::mutex> lock(g_configMutex);
+            g_config.placeId = place;
+            g_config.port = port;
+            g_config.retries = retries;
+            g_config.delayMs = delay;
+        }
+        RefreshScriptBuffer();
+    }
 }
 
 std::wstring ExtractField(const std::string& request, const std::string& key) {
@@ -364,6 +397,8 @@ void HandleClient(SOCKET client) {
         g_jobs.push(jobId);
     }
     g_jobCv.notify_one();
+    g_captured.fetch_add(1);
+    SetLastJob(jobId);
     SetStatus(L"job captured: " + jobId.substr(0, 18));
 }
 
@@ -448,6 +483,7 @@ void WorkerThread() {
             SetStatus(L"deep link attempt " + std::to_wstring(attempt) + L"/" +
                       std::to_wstring(cfg.retries) + L" - " + job.substr(0, 18));
             OpenDeepLink(job);
+            g_attempts.fetch_add(1);
             DWORD step = static_cast<DWORD>(cfg.delayMs);
             while (step > 0 && !g_stop) {
                 DWORD slice = step > 100 ? 100 : step;
@@ -461,7 +497,7 @@ void WorkerThread() {
 
 void StartServer() {
     if (g_serverRunning) return;
-    ReadConfigFromControls();
+    SyncConfigFromUi();
     g_stop = false;
     g_serverThread = std::thread(ServerThread);
     g_workerThread = std::thread(WorkerThread);
@@ -486,247 +522,243 @@ void StopServer() {
     SetStatus(L"server stopped");
 }
 
-void CopyScriptToClipboard() {
-    HWND edit = GetDlgItem(g_window, kIdScript);
-    if (!edit) return;
-    int length = GetWindowTextLengthW(edit);
-    if (length <= 0) return;
-    std::wstring text(static_cast<size_t>(length) + 1, L'\0');
-    GetWindowTextW(edit, &text[0], static_cast<int>(text.size()));
-    text.resize(static_cast<size_t>(length));
+bool CreateDeviceD3D(HWND hwnd) {
+    DXGI_SWAP_CHAIN_DESC desc = {};
+    desc.BufferCount = 2;
+    desc.BufferDesc.Width = 0;
+    desc.BufferDesc.Height = 0;
+    desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.BufferDesc.RefreshRate.Numerator = 60;
+    desc.BufferDesc.RefreshRate.Denominator = 1;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.OutputWindow = hwnd;
+    desc.SampleDesc.Count = 1;
+    desc.SampleDesc.Quality = 0;
+    desc.Windowed = TRUE;
 
-    if (!OpenClipboard(g_window)) return;
-    EmptyClipboard();
-    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
-    if (memory) {
-        wchar_t* target = static_cast<wchar_t*>(GlobalLock(memory));
-        std::memcpy(target, text.c_str(), (text.size() + 1) * sizeof(wchar_t));
-        GlobalUnlock(memory);
-        SetClipboardData(CF_UNICODETEXT, memory);
+    D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
+    if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+                                             &level, 1, D3D11_SDK_VERSION, &desc,
+                                             &g_swapChain, &g_device, nullptr, &g_context))) {
+        return false;
     }
-    CloseClipboard();
-    SetStatus(L"lua script copied to clipboard");
+    return true;
 }
 
-void DrawRounded(HDC hdc, int left, int top, int right, int bottom, COLORREF fill, COLORREF edge) {
-    HBRUSH brush = CreateSolidBrush(fill);
-    HPEN pen = CreatePen(PS_SOLID, 1, edge);
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(hdc, brush));
-    HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, pen));
-    RoundRect(hdc, left, top, right, bottom, 10, 10);
-    SelectObject(hdc, oldBrush);
-    SelectObject(hdc, oldPen);
-    DeleteObject(brush);
-    DeleteObject(pen);
+void CleanupDeviceD3D() {
+    if (g_renderTarget) { g_renderTarget->Release(); g_renderTarget = nullptr; }
+    if (g_background) { g_background->Release(); g_background = nullptr; }
+    if (g_swapChain) { g_swapChain->Release(); g_swapChain = nullptr; }
+    if (g_context) { g_context->Release(); g_context = nullptr; }
+    if (g_device) { g_device->Release(); g_device = nullptr; }
 }
 
-void PaintWindow(HWND hwnd) {
-    PAINTSTRUCT ps;
-    HDC hdc = BeginPaint(hwnd, &ps);
+void CreateRenderTarget() {
+    ID3D11Texture2D* backBuffer = nullptr;
+    if (SUCCEEDED(g_swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer)))) {
+        g_device->CreateRenderTargetView(backBuffer, nullptr, &g_renderTarget);
+        backBuffer->Release();
+    }
+}
 
-    auto label = [&](const wchar_t* text, long left, long top, long right, long bottom, UINT flags) {
-        RECT box{left, top, right, bottom};
-        DrawTextW(hdc, text, -1, &box, flags);
-    };
+void CleanupRenderTarget() {
+    if (g_renderTarget) { g_renderTarget->Release(); g_renderTarget = nullptr; }
+}
 
-    RECT rect;
-    GetClientRect(hwnd, &rect);
+void LoadBackgroundTexture() {
+    wchar_t modulePath[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, modulePath, MAX_PATH)) return;
+    std::wstring path(modulePath);
+    size_t slash = path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return;
+    path.resize(slash + 1);
+    path += L"assets\\login.jpg";
+
+    Gdiplus::Image source(path.c_str());
+    if (source.GetLastStatus() != Gdiplus::Ok) return;
+
+    const INT width = static_cast<INT>(source.GetWidth());
+    const INT height = static_cast<INT>(source.GetHeight());
+    Gdiplus::Bitmap bitmap(width, height, PixelFormat32bppARGB);
+    Gdiplus::Graphics graphics(&bitmap);
+    graphics.DrawImage(&source, 0, 0, width, height);
+
+    Gdiplus::BitmapData data = {};
+    Gdiplus::Rect bounds(0, 0, width, height);
+    if (bitmap.LockBits(&bounds, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &data) != Gdiplus::Ok) return;
+
+    D3D11_TEXTURE2D_DESC textureDesc = {};
+    textureDesc.Width = static_cast<UINT>(width);
+    textureDesc.Height = static_cast<UINT>(height);
+    textureDesc.MipLevels = 1;
+    textureDesc.ArraySize = 1;
+    textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    textureDesc.SampleDesc.Count = 1;
+    textureDesc.Usage = D3D11_USAGE_DEFAULT;
+    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA upload = {};
+    upload.pSysMem = data.Scan0;
+    upload.SysMemPitch = static_cast<UINT>(data.Stride);
+
+    ID3D11Texture2D* texture = nullptr;
+    if (SUCCEEDED(g_device->CreateTexture2D(&textureDesc, &upload, &texture))) {
+        D3D11_SHADER_RESOURCE_VIEW_DESC viewDesc = {};
+        viewDesc.Format = textureDesc.Format;
+        viewDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        viewDesc.Texture2D.MipLevels = 1;
+        g_device->CreateShaderResourceView(texture, &viewDesc, &g_background);
+        texture->Release();
+    }
+    bitmap.UnlockBits(&data);
+}
+
+void LoadFonts() {
+    wchar_t fontsDirectory[MAX_PATH] = {};
+    GetWindowsDirectoryW(fontsDirectory, MAX_PATH);
+    std::wstring base(fontsDirectory);
+    base += L"\\Fonts\\";
+
+    ImGuiIO& io = ImGui::GetIO();
+    std::string uiPath = WideToUtf8(base + L"segoeui.ttf");
+    std::string monoPath = WideToUtf8(base + L"consola.ttf");
+    g_uiFont = io.Fonts->AddFontFromFileTTF(uiPath.c_str(), 15.0f);
+    g_monoFont = io.Fonts->AddFontFromFileTTF(monoPath.c_str(), 13.0f);
+    if (!g_uiFont) g_uiFont = io.Fonts->AddFontDefault();
+    if (!g_monoFont) g_monoFont = g_uiFont;
+}
+
+void ApplyStyle() {
+    ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 12.0f;
+    style.FrameRounding = 6.0f;
+    style.GrabRounding = 6.0f;
+    style.PopupRounding = 8.0f;
+    style.WindowPadding = ImVec2(14.0f, 12.0f);
+    style.FramePadding = ImVec2(8.0f, 5.0f);
+    style.ItemSpacing = ImVec2(10.0f, 7.0f);
+    style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
+    style.ScrollbarSize = 10.0f;
+
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.07f, 0.03f, 0.13f, 0.94f);
+    style.Colors[ImGuiCol_ChildBg] = ImVec4(0.10f, 0.05f, 0.18f, 0.92f);
+    style.Colors[ImGuiCol_FrameBg] = ImVec4(0.16f, 0.08f, 0.27f, 1.00f);
+    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.22f, 0.11f, 0.36f, 1.00f);
+    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.28f, 0.14f, 0.45f, 1.00f);
+    style.Colors[ImGuiCol_Button] = ImVec4(0.35f, 0.15f, 0.58f, 1.00f);
+    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.69f, 0.31f, 1.00f, 1.00f);
+    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.52f, 0.22f, 0.82f, 1.00f);
+    style.Colors[ImGuiCol_CheckMark] = ImVec4(0.69f, 0.31f, 1.00f, 1.00f);
+    style.Colors[ImGuiCol_Separator] = ImVec4(0.41f, 0.20f, 0.62f, 1.00f);
+    style.Colors[ImGuiCol_Text] = ImVec4(0.97f, 0.95f, 1.00f, 1.00f);
+    style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.60f, 0.54f, 0.72f, 1.00f);
+}
+
+void Section(const char* title) {
+    ImGui::TextColored(ImVec4(0.69f, 0.31f, 1.00f, 1.00f), "%s", title);
+    ImGui::Separator();
+    ImGui::Spacing();
+}
+
+void DrawInterface() {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    ImDrawList* backdrop = ImGui::GetBackgroundDrawList();
+    if (g_background) {
+        backdrop->AddImage(g_background, ImVec2(0, 0), display, ImVec2(0, 0), ImVec2(1, 1),
+                           IM_COL32(74, 44, 112, 235));
+    } else {
+        backdrop->AddRectFilled(ImVec2(0, 0), display, IM_COL32(13, 6, 24, 255));
+    }
+
+    ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(520, 590), ImGuiCond_FirstUseEver);
+    ImGui::Begin("skyro.wtf", nullptr, ImGuiWindowFlags_NoCollapse);
+
+    ImGui::PushFont(g_uiFont);
+    ImGui::TextColored(ImVec4(0.69f, 0.31f, 1.00f, 1.00f), "skyro.wtf");
+    ImGui::PopFont();
+    ImGui::TextDisabled("deep link server joiner");
+    ImGui::Spacing();
+
+    Section("CONTROL");
+    bool enabled = false;
     {
-        Gdiplus::Graphics graphics(hdc);
-        if (g_background) {
-            graphics.DrawImage(g_background, 0, 0, rect.right, rect.bottom);
-            Gdiplus::SolidBrush veil(Gdiplus::Color(214, 13, 6, 24));
-            graphics.FillRectangle(&veil, 0, 0, rect.right, rect.bottom);
-        } else {
-            Gdiplus::SolidBrush base(Gdiplus::Color(255, 13, 6, 24));
-            graphics.FillRectangle(&base, 0, 0, rect.right, rect.bottom);
-        }
+        std::lock_guard<std::mutex> lock(g_configMutex);
+        enabled = g_config.enabled;
+    }
+    if (ImGui::Checkbox("Interceptor", &enabled)) {
+        std::lock_guard<std::mutex> lock(g_configMutex);
+        g_config.enabled = enabled;
+        SetStatus(enabled ? L"interceptor on" : L"interceptor off");
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled(enabled ? "capturing job ids" : "jobs ignored");
+    if (ImGui::Button(g_serverRunning ? "STOP SERVER" : "START SERVER", ImVec2(-1, 0))) {
+        if (g_serverRunning) StopServer();
+        else StartServer();
     }
 
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, kPurple);
-    SelectObject(hdc, g_uiFont);
-    label(L"skyro.wtf", 24, 18, 320, 58, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    SetTextColor(hdc, kWhite);
-    label(L"DEEP LINK SERVER JOINER", 24, 54, 420, 78, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    ImGui::Spacing();
+    Section("TARGET");
+    ImGui::PushItemWidth(240.0f);
+    ImGui::InputText("Place ID", g_placeBuffer, IM_ARRAYSIZE(g_placeBuffer));
+    ImGui::InputText("Port", g_portBuffer, IM_ARRAYSIZE(g_portBuffer), ImGuiInputTextFlags_CharsDecimal);
+    ImGui::InputText("Retries", g_retriesBuffer, IM_ARRAYSIZE(g_retriesBuffer), ImGuiInputTextFlags_CharsDecimal);
+    ImGui::InputText("Delay (ms)", g_delayBuffer, IM_ARRAYSIZE(g_delayBuffer), ImGuiInputTextFlags_CharsDecimal);
+    ImGui::PopItemWidth();
+    SyncConfigFromUi();
 
-    SetTextColor(hdc, kMuted);
-    label(L"APPLICATION", 28, 100, 250, 120, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    SetTextColor(hdc, kWhite);
-    label(L"Roblox Server Launcher", 28, 122, 360, 146, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    SetTextColor(hdc, kMuted);
-    label(L"PLACE ID", 28, 160, 150, 182, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    label(L"PORT", 240, 160, 340, 182, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    label(L"RETRIES", 410, 160, 520, 182, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    label(L"DELAY (MS)", 570, 160, 720, 182, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    ImGui::Spacing();
+    Section("LIVE");
+    std::wstring status = GetStatus();
+    std::wstring lastJob = GetLastJob();
+    ImGui::Text("status");
+    ImGui::SameLine(110.0f);
+    ImGui::TextWrapped("%s", WideToUtf8(status).c_str());
+    ImGui::Text("captured");
+    ImGui::SameLine(110.0f);
+    ImGui::Text("%d", g_captured.load());
+    ImGui::Text("attempts");
+    ImGui::SameLine(110.0f);
+    ImGui::Text("%d", g_attempts.load());
+    ImGui::Text("last job");
+    ImGui::SameLine(110.0f);
+    ImGui::TextWrapped("%s", WideToUtf8(lastJob).c_str());
 
-    DrawRounded(hdc, 26, 226, 724, 250, kPanel, kPurpleDeep);
-    SetTextColor(hdc, kMuted);
-    label(L"INTERCEPTOR", 40, 228, 220, 248, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    ImGui::Spacing();
+    Section("AUTO EXECUTE SCRIPT");
+    if (ImGui::Button("COPY SCRIPT", ImVec2(-1, 0))) {
+        ImGui::SetClipboardText(g_scriptBuffer);
+        SetStatus(L"lua script copied to clipboard");
+    }
+    ImGui::PushFont(g_monoFont);
+    ImGui::InputTextMultiline("##script", g_scriptBuffer, IM_ARRAYSIZE(g_scriptBuffer),
+                              ImVec2(-1, 250), ImGuiInputTextFlags_ReadOnly);
+    ImGui::PopFont();
 
-    SetTextColor(hdc, kWhite);
-    label(L"AUTO EXECUTE SCRIPT", 28, 352, 400, 374, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-    DrawRounded(hdc, 26, 560, 724, 584, kPanel, kPurpleDeep);
-    SetTextColor(hdc, kMuted);
-    std::wstring status = L"STATUS: " + GetStatus();
-    label(status.c_str(), 40, 562, 710, 582, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-    EndPaint(hwnd, &ps);
+    ImGui::End();
 }
 
-LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (ImGui_ImplWin32_WndProcHandler(hwnd, message, wparam, lparam)) return 1;
+
     switch (message) {
-        case WM_CREATE: {
-            g_window = hwnd;
-            g_uiFont = CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                   DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                   DEFAULT_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-            g_monoFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                     DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                     DEFAULT_QUALITY, DEFAULT_PITCH, L"Consolas");
-            g_panelBrush = CreateSolidBrush(kPanel);
-            kaltBrush = CreateSolidBrush(kPanelAlt);
-            g_bgBrush = CreateSolidBrush(kBackground);
-
-            const int editStyle = WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL;
-            CreateWindowExW(0, L"EDIT", L"109983668079237", editStyle, 28, 184, 190, 26, hwnd,
-                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdPlace)), nullptr, nullptr);
-            CreateWindowExW(0, L"EDIT", L"6969", editStyle, 240, 184, 140, 26, hwnd,
-                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdPort)), nullptr, nullptr);
-            CreateWindowExW(0, L"EDIT", L"10", editStyle, 410, 184, 130, 26, hwnd,
-                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdRetries)), nullptr, nullptr);
-            CreateWindowExW(0, L"EDIT", L"1500", editStyle, 570, 184, 150, 26, hwnd,
-                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdDelay)), nullptr, nullptr);
-
-            CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
-                            600, 225, 110, 26, hwnd,
-                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdToggle)), nullptr, nullptr);
-            CreateWindowExW(0, L"BUTTON", L"START SERVER", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
-                            28, 306, 220, 40, hwnd,
-                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdStart)), nullptr, nullptr);
-            CreateWindowExW(0, L"BUTTON", L"COPY SCRIPT", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | WS_TABSTOP,
-                            500, 306, 220, 40, hwnd,
-                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdCopy)), nullptr, nullptr);
-
-            HWND script = CreateWindowExW(0, L"EDIT", L"",
-                                          WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | ES_MULTILINE |
-                                          ES_READONLY | ES_AUTOVSCROLL,
-                                          28, 378, 696, 168, hwnd,
-                                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdScript)), nullptr, nullptr);
-            (void)script;
-
-            SetTimer(hwnd, kTimerStatus, 200, nullptr);
-            RefreshScript();
-            return 0;
-        }
-
-        case WM_PAINT:
-            PaintWindow(hwnd);
-            return 0;
-
-        case WM_TIMER: {
-            if (wparam == kTimerStatus) {
-                RECT zone{0, 556, 750, 590};
-                InvalidateRect(hwnd, &zone, FALSE);
+        case WM_SIZE:
+            if (g_device && wparam != SIZE_MINIMIZED) {
+                CleanupRenderTarget();
+                g_swapChain->ResizeBuffers(0, static_cast<UINT>(LOWORD(lparam)),
+                                           static_cast<UINT>(HIWORD(lparam)), DXGI_FORMAT_UNKNOWN, 0);
+                CreateRenderTarget();
             }
             return 0;
-        }
-
-        case WM_CTLCOLORSTATIC:
-        case WM_CTLCOLOREDIT: {
-            HDC hdc = reinterpret_cast<HDC>(wparam);
-            SetTextColor(hdc, kWhite);
-            SetBkColor(hdc, kPanel);
-            HWND child = reinterpret_cast<HWND>(lparam);
-            if (GetDlgCtrlID(child) == kIdScript) SelectObject(hdc, g_monoFont);
-            return reinterpret_cast<LRESULT>(g_panelBrush);
-        }
-
-        case WM_DRAWITEM: {
-            DRAWITEMSTRUCT* item = reinterpret_cast<DRAWITEMSTRUCT*>(lparam);
-            HDC hdc = item->hDC;
-            RECT box = item->rcItem;
-            bool hover = (item->itemState & ODS_HOTLIGHT) != 0;
-            if (item->CtlID == kIdToggle) {
-                bool on = false;
-                {
-                    std::lock_guard<std::mutex> lock(g_configMutex);
-                    on = g_config.enabled;
-                }
-                COLORREF track = on ? kPurple : kPanelAlt;
-                COLORREF edge = on ? kPurple : kMuted;
-                DrawRounded(hdc, box.left + 62, box.top + 6, box.left + 108, box.top + 22, track, edge);
-                int knobX = on ? box.left + 88 : box.left + 65;
-                HBRUSH knob = CreateSolidBrush(kWhite);
-                SelectObject(hdc, knob);
-                Ellipse(hdc, knobX, box.top + 7, knobX + 14, box.top + 21);
-                DeleteObject(knob);
-                SetBkMode(hdc, TRANSPARENT);
-                SetTextColor(hdc, kMuted);
-                SelectObject(hdc, g_uiFont);
-                RECT toggleLabel{box.left, box.top, box.left + 56, box.bottom};
-                DrawTextW(hdc, on ? L"ON" : L"OFF", -1, &toggleLabel,
-                          DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-            } else {
-                COLORREF fill = hover ? kPurpleDeep : kPanelAlt;
-                COLORREF edge = item->CtlID == kIdStart ? kPurple : kPurpleDeep;
-                if (item->CtlID == kIdStart && g_serverRunning) fill = kPurple;
-                DrawRounded(hdc, box.left, box.top, box.right, box.bottom, fill, edge);
-                SetBkMode(hdc, TRANSPARENT);
-                SetTextColor(hdc, kWhite);
-                SelectObject(hdc, g_uiFont);
-                wchar_t label[64] = {};
-                GetWindowTextW(item->hwndItem, label, 64);
-                if (item->CtlID == kIdStart && g_serverRunning) {
-                    std::wcscpy(label, L"STOP SERVER");
-                }
-                DrawTextW(hdc, label, -1, &box, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            }
-            return 0;
-        }
-
-        case WM_COMMAND: {
-            int id = LOWORD(wparam);
-            int event = HIWORD(wparam);
-            if (event == EN_CHANGE && id >= kIdPlace && id <= kIdDelay) {
-                ReadConfigFromControls();
-                return 0;
-            }
-            if (event != BN_CLICKED) return 0;
-            if (id == kIdToggle) {
-                {
-                    std::lock_guard<std::mutex> lock(g_configMutex);
-                    g_config.enabled = !g_config.enabled;
-                }
-                RECT toggleZone{26, 226, 724, 250};
-                InvalidateRect(hwnd, &toggleZone, FALSE);
-                SetStatus(g_config.enabled ? L"interceptor on" : L"interceptor off");
-            } else if (id == kIdStart) {
-                if (g_serverRunning) StopServer();
-                else StartServer();
-                InvalidateRect(hwnd, nullptr, TRUE);
-            } else if (id == kIdCopy) {
-                CopyScriptToClipboard();
-            }
-            return 0;
-        }
-
         case WM_CLOSE:
             StopServer();
-            KillTimer(hwnd, kTimerStatus);
             DestroyWindow(hwnd);
             return 0;
-
         case WM_DESTROY:
-            DeleteObject(g_uiFont);
-            DeleteObject(g_monoFont);
-            DeleteObject(g_panelBrush);
-            DeleteObject(kaltBrush);
-            DeleteObject(g_bgBrush);
             PostQuitMessage(0);
             return 0;
-
         default:
             return DefWindowProcW(hwnd, message, wparam, lparam);
     }
@@ -739,37 +771,72 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     if (Gdiplus::GdiplusStartup(&g_gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) return 1;
 
     WNDCLASSW wc = {};
-    wc.lpfnWndProc = WindowProc;
+    wc.lpfnWndProc = WndProc;
     wc.hInstance = instance;
     wc.lpszClassName = L"SkyroWtfWindow";
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     if (!RegisterClassW(&wc)) {
         Gdiplus::GdiplusShutdown(g_gdiplusToken);
         return 1;
     }
 
-    HWND window = CreateWindowExW(0, L"SkyroWtfWindow", L"skyro.wtf - Deep Link Server Joiner",
-                                  WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                                  CW_USEDEFAULT, CW_USEDEFAULT, 760, 640,
-                                  nullptr, nullptr, instance, nullptr);
-    if (!window) {
+    g_window = CreateWindowExW(0, L"SkyroWtfWindow", L"skyro.wtf - Deep Link Server Joiner",
+                               WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 560, 640,
+                               nullptr, nullptr, instance, nullptr);
+    if (!g_window) {
         Gdiplus::GdiplusShutdown(g_gdiplusToken);
         return 1;
     }
 
-    LoadBackground();
-
-    ShowWindow(window, show);
-    UpdateWindow(window);
-
-    MSG msg = {};
-    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+    if (!CreateDeviceD3D(g_window)) {
+        Gdiplus::GdiplusShutdown(g_gdiplusToken);
+        return 1;
     }
-    delete g_background;
-    g_background = nullptr;
+    CreateRenderTarget();
+    LoadBackgroundTexture();
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    ApplyStyle();
+    LoadFonts();
+
+    ImGui_ImplWin32_Init(g_window);
+    ImGui_ImplDX11_Init(g_device, g_context);
+    RefreshScriptBuffer();
+
+    ShowWindow(g_window, show);
+    UpdateWindow(g_window);
+
+    bool running = true;
+    while (running) {
+        MSG msg = {};
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+            if (msg.message == WM_QUIT) running = false;
+        }
+        if (!running) break;
+
+        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+        DrawInterface();
+        ImGui::Render();
+
+        g_context->OMSetRenderTargets(1, &g_renderTarget, nullptr);
+        const float clearColor[4] = {0.05f, 0.02f, 0.09f, 1.0f};
+        g_context->ClearRenderTargetView(g_renderTarget, clearColor);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        g_swapChain->Present(1, 0);
+    }
+
+    StopServer();
+    ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+    CleanupDeviceD3D();
     Gdiplus::GdiplusShutdown(g_gdiplusToken);
     return 0;
 }
