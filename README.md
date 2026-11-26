@@ -1,6 +1,6 @@
 # skyro.wtf — Deep Link GUI
 
-Small GUI-only Windows shell with a locked place ID, editable delay and rejoin count, and a visible `assets/login.jpg` backdrop.
+Small GUI-only Windows shell with editable join timing, retry count, smooth side scrolling, a top-most toggle, a top-bar power switch, and a visible `assets/login.jpg` backdrop.
 
 ![skyro.wtf background](assets/login.jpg)
 
@@ -54,22 +54,23 @@ Each build copies `assets/` next to the executable. The exe resolves `assets\log
 
 ## Interface
 
-Window size is `600 x 400`. Top bar drag area moves the window, and `x` closes it. `Esc` also closes it.
+Window size is `600 x 400`. Drag the top bar to move it; `x` closes it and `Esc` also closes it.
 
-| Area | Behaviour |
+| Control | Behaviour |
 | --- | --- |
-| Deep Link header | Title and one-line description. |
-| Target | Shows fixed Place ID `109983668079237`, marked locked. Not editable. |
-| Timing | Editable `Delay ms` and `Rejoin`. Values clamp to `50..60000` ms and `1..1000`. |
-| Rejoin button | Full-width button with a short accent pulse on click. GUI state only. |
+| Power | Left of `TOP` in the top-right cluster. Toggles the GUI service state between `OFF` and `ON`. The `REJOIN` button stays disabled while off. |
+| TOP | Toggles `SetWindowPos` between `HWND_TOPMOST` and `HWND_NOTOPMOST`. |
+| Timing | `Delay Between Each Join` defaults to `0.15` seconds and clamps to `0.01..60.00`. `Retry` defaults to `10` and clamps to `1..1000`. |
+| REJOIN | Full-width button with a short accent pulse on click. Available only while power is on. GUI state only. |
+| Scrolling | Mouse wheel over the content eases the scroll target; the slim rail on the right can be clicked or dragged. Both are smoothed with an exponential blend. |
 
-There is no URL preview field and no place ID field.
+The timing card sits at the top. The locked target card is gone; there is no URL preview field and no place ID field.
 
 ## Layout details
 
 - Window: `600 x 400`, `WS_POPUP`, layered, rounded with a 22 px region.
 - Frame: `SetLayeredWindowAttributes`, `DwmExtendFrameIntoClientArea`, rounded region, `SetWindowCompositionAttribute` blur.
-- Content: two translucent cards over the artwork, fixed `14 px` rounding, low-alpha ChildBg, accent border.
+- Content: timing, queue, and controls cards over the artwork, fixed `14 px` rounding, low-alpha ChildBg, accent border.
 - Theme: Segoe UI body at 15 px, semibold header at 19 px, small meta at 12 px.
 - Rendering: DX11 swap chain with transparent clear, ImGui draw data over a GDI+-loaded JPEG texture.
 
