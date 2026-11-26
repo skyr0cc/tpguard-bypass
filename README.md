@@ -73,15 +73,14 @@ The timing card sits at the top. The locked target, queue, and controls cards ar
 
 ## Lua helper
 
-`lua/skyro_wtf.lua` is a universal feed tap. It does not read feed URLs or tokens from globals. It installs taps on the calls every other auto joiner already uses, logs every new job id in a small in-game panel, and sends `roblox://experiences/start?placeId=<id>&gameInstanceId=<job>` through the first available request function. `REJOIN` reads the current `game.JobId` and sends that same URI even when it is the server you are already in. `AUTO ON`, `REJOIN`, `RECONNECT`, and `CLEAR` sit in the header; captured rows have their own `JOIN` button.
+`lua/skyro_wtf.lua` is a universal feed tap with no function hooks. It does not read feed URLs or tokens from globals. It wraps the global calls every other auto joiner already uses, logs every new job id in a small in-game panel, and sends `roblox://experiences/start?placeId=<id>&gameInstanceId=<job>` through the first available executor request function. `REJOIN` reads the current `game.JobId` and sends that same URI even when it is the server you are already in. `AUTO ON`, `REJOIN`, `RECONNECT`, and `CLEAR` sit in the header; captured rows have their own `JOIN` button.
 
 Taps:
 
-- `HttpService.JSONDecode` — catches decoded feeds from any script, whatever feed URL it uses.
-- `syn.request`, `http.request`, `http_request`, `fluxus.request`, and `request` — catches feed responses and outgoing deep links. Deep links are sent through these executor request functions only; `HttpService.HttpGet` is never indexed and executor tables are never written to.
-- `writefile`, `appendfile`, and `readfile` — catches local JSON/TXT feeds written or read by trackers.
+- `request`, `writefile`, `appendfile`, and `readfile` — catches feed responses and local JSON/TXT feeds written or read by trackers. Each wrapper is installed with `pcall(rawset, ...)`; a read-only table is skipped, not fatal.
 - `setclipboard` — catches deep links copied by other joiners.
 - `listfiles` boot sweep — reads up to 200 local `.json` and `.txt` files once on load.
+- `syn.request`, `http.request`, `http_request`, `fluxus.request`, and `request` — used only to send deep links. No Roblox HTTP member is indexed, no executor table is written to, and no function is hooked.
 
 Job ids are pulled from `jobId`, `serverId`, `gameInstanceId`, and from `roblox://experiences/start?...`, `roblox://placeId=...`, or `https://www.roblox.com/games/start?...` links anywhere in tapped data. The deep link is attempted `Retry` times with `Delay Between Each Join` between attempts. If the executor refuses the scheme, the helper falls back through `ExperienceService:LaunchExperience`, `TeleportService:TeleportToPlaceInstance`, web start, `setclipboard`, and `GuiService:OpenBrowserWindow`.
 
