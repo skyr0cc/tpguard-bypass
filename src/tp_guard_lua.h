@@ -346,7 +346,8 @@ local function addLog(level, message, jobData)
 end
 
 local function buildLink(placeId, jobId)
-    return string.format("roblox://placeId=%d&gameInstanceId=%s",
+    -- Same URI shape as tools/tpguard.bat and tools/tpguard.sh, with the live job id.
+    return string.format("roblox://experiences/start?placeId=%d&gameInstanceId=%s",
         tonumber(placeId) or Config.PLACE_ID, tostring(jobId))
 end
 
@@ -419,15 +420,18 @@ local function fallbackMethods(placeId, jobId, link)
     return methods
 end
 
-openDeepLink = function(placeId, jobId, source)
+openDeepLink = function(placeId, jobId, source, allowCurrent)
     placeId = tonumber(placeId) or Config.PLACE_ID
     if not jobId or jobId == "" then
         addLog("ERR", "No job id from " .. tostring(source or "source"))
         return false
     end
     if jobId == game.JobId then
-        addLog("WARN", "Already in " .. tostring(jobId))
-        return false
+        if not allowCurrent then
+            addLog("WARN", "Already in " .. tostring(jobId))
+            return false
+        end
+        addLog("INFO", "Rejoining current server " .. tostring(jobId))
     end
 
     local link = buildLink(placeId, jobId)
@@ -688,9 +692,13 @@ end)
 
 RejoinBtn.MouseButton1Click:Connect(function()
     local placeId, jobId = currentServer()
-    if openDeepLink then
-        task.spawn(function() openDeepLink(placeId, jobId, "rejoin button") end)
+    if not jobId or jobId == "" then
+        addLog("ERR", "No current job id - wait until you are in a server")
+        return
     end
+    task.spawn(function()
+        openDeepLink(placeId, jobId, "rejoin button", true)
+    end)
 end)
 
 ReconnBtn.MouseButton1Click:Connect(function()
