@@ -78,7 +78,7 @@ The timing card sits at the top. The locked target, queue, and controls cards ar
 Taps:
 
 - `HttpService.JSONDecode` — catches decoded feeds from any script, whatever feed URL it uses.
-- `syn.request`, `http.request`, `http_request`, `fluxus.request`, and `request` — catches feed responses and outgoing deep links. Deep links are sent through these executor request functions only; `HttpService.HttpGet` is never indexed.
+- `syn.request`, `http.request`, `http_request`, `fluxus.request`, and `request` — catches feed responses and outgoing deep links. Deep links are sent through these executor request functions only; `HttpService.HttpGet` is never indexed and executor tables are never written to.
 - `writefile`, `appendfile`, and `readfile` — catches local JSON/TXT feeds written or read by trackers.
 - `setclipboard` — catches deep links copied by other joiners.
 - `listfiles` boot sweep — reads up to 200 local `.json` and `.txt` files once on load.

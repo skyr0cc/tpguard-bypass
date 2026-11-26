@@ -18,7 +18,7 @@ local Config = {
     LOG_FILE    = "tp_guard/rejoin.txt",
     SERVER_FILE = "tp_guard/server.json",
 }
-if getgenv then getgenv().tp_guard_bi_pass = Config end
+if getgenv then pcall(function() getgenv().tp_guard_bi_pass = Config end) end
 
 local Players          = game:GetService("Players")
 local TeleportService  = game:GetService("TeleportService")
@@ -561,20 +561,25 @@ local function submitResults(results, source)
     end
 end
 
-local function setGlobal(name, fn)
-    rawset(env, name, fn)
-    if env ~= _G then rawset(_G, name, fn) end
+local function setGlobal(name, fn, original)
+    local ok = pcall(rawset, env, name, fn)
+    if not ok and env ~= _G then ok = pcall(rawset, _G, name, fn) end
+    if not ok and hookfunction and type(original) == "function" then
+        pcall(hookfunction, original, fn)
+    end
 end
 
-local function wrapTableField(target, key, source)
-    if type(target) ~= "table" then return end
+-- Hook the function itself. Some executors expose syn/http/fluxus as read-only
+-- tables, so assigning target[key] would abort the whole script.
+local function tapRequestField(target, key, source)
+    if type(target) ~= "table" or not hookfunction then return end
     local original = target[key]
     if type(original) ~= "function" then return end
-    target[key] = cclosure(function(...)
+    hookfunction(original, cclosure(function(...)
         local results = pack(original(...))
         submitResults(results, source)
         return unpackValues(results, 1, results.n)
-    end)
+    end))
 end
 
 local function safeTap(fn, ...)
@@ -594,9 +599,9 @@ if hookfunction and type(rawJsonDecode) == "function" then
 end
 
 -- Executor request taps catch feed responses and outgoing deep links.
-safeTap(wrapTableField, rawget(env, "syn"), "request", "syn request")
-safeTap(wrapTableField, rawget(env, "http"), "request", "http request")
-safeTap(wrapTableField, rawget(env, "fluxus"), "request", "fluxus request")
+safeTap(tapRequestField, rawget(env, "syn"), "request", "syn request")
+safeTap(tapRequestField, rawget(env, "http"), "request", "http request")
+safeTap(tapRequestField, rawget(env, "fluxus"), "request", "fluxus request")
 
 for _, name in ipairs({ "request", "writefile", "appendfile", "readfile", "setclipboard" }) do
     local original = rawget(env, name)
@@ -617,7 +622,7 @@ for _, name in ipairs({ "request", "writefile", "appendfile", "readfile", "setcl
                 end
             end
             return original(...)
-        end))
+        end), original)
     end
 end
 
