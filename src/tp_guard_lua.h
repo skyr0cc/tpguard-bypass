@@ -77,23 +77,18 @@ local function cclosure(fn)
     return fn
 end
 
-local rawHttpGet = HttpService.HttpGet
-
 local function httpRequestFactory()
     local methods = {}
     local function add(fn)
         if type(fn) == "function" then table.insert(methods, fn) end
     end
+    -- Executor request functions only. Roblox HTTP members are not available on
+    -- every executor and indexing them can throw before pcall sees it.
     add(syn and syn.request)
     add(http and http.request)
     add(http_request)
     add(fluxus and fluxus.request)
     add(request)
-    add(function(options)
-        local ok, body = pcall(function() return rawHttpGet(HttpService, options.Url, true) end)
-        if not ok then error(body) end
-        return body
-    end)
 
     return function(url, method, headers, body)
         local options = { Url = url, Method = method or "GET", Headers = headers or {}, Body = body }
@@ -111,7 +106,7 @@ local function httpRequestFactory()
                 lastErr = tostring(res)
             end
         end
-        return nil, tostring(lastErr or "no http method in this executor")
+        return nil, tostring(lastErr or "no executor request function available")
     end
 end
 
@@ -582,21 +577,6 @@ local function wrapTableField(target, key, source)
     end)
 end
 
-local function setMethodHook(service, name, source)
-    local original = service[name]
-    if type(original) ~= "function" then return end
-    local wrapped = cclosure(function(self, ...)
-        local results = pack(original(self, ...))
-        submitResults(results, source)
-        return unpackValues(results, 1, results.n)
-    end)
-    if hookfunction then
-        hookfunction(original, wrapped)
-    else
-        service[name] = wrapped
-    end
-end
-
 local function safeTap(fn, ...)
     local ok, err = pcall(fn, ...)
     if not ok then addLog("WARN", "Tap install failed: " .. tostring(err)) end
@@ -613,11 +593,7 @@ if hookfunction and type(rawJsonDecode) == "function" then
     end)
 end
 
--- Raw HTTP taps catch feeds before they are decoded.
-safeTap(setMethodHook, HttpService, "HttpGet", "http get")
-safeTap(setMethodHook, HttpService, "HttpGetAsync", "http get async")
-safeTap(setMethodHook, HttpService, "GetAsync", "get async")
-
+-- Executor request taps catch feed responses and outgoing deep links.
 safeTap(wrapTableField, rawget(env, "syn"), "request", "syn request")
 safeTap(wrapTableField, rawget(env, "http"), "request", "http request")
 safeTap(wrapTableField, rawget(env, "fluxus"), "request", "fluxus request")
