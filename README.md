@@ -66,14 +66,14 @@ Window size is `600 x 400`. Drag the top bar to move it; `x` closes it and `Esc`
 | Timing | `Delay Between Each Join` defaults to `0.15` seconds and clamps to `0.01..60.00`. `Retry` defaults to `10` and clamps to `1..1000`. |
 | REJOIN | Full-width button with a short accent pulse. Sends the rejoin, then powers the joiner off after `1.2` s so it stays stopped until you turn it on again. |
 | Instructions | Three steps in the panel: click power, set timing and press `REJOIN`, then let the join send power off. |
-| GET LUA SCRIPT | Creates `lua/skyro_wtf.lua` beside the exe using the current delay and retry values. The script reads `game.JobId`, builds `roblox://experiences/start?placeId=<id>&gameInstanceId=<job>`, and uses that link for `REJOIN`. Put the file in your auto execute folder. |
+| GET LUA SCRIPT | Creates `lua/skyro_wtf.lua` beside the exe using the current delay and retry values. The script reads `game.JobId`, builds `roblox://experiences/start?placeId=<id>&gameInstanceId=<job>`, and uses that link for both `REJOIN` and `RECONNECT`. Put the file in your auto execute folder. |
 | Scrolling | Mouse wheel over the content eases the scroll target; the slim rail on the right can be clicked or dragged. Both are smoothed with an exponential blend. |
 
 The timing card sits at the top. The locked target, queue, and controls cards are gone; there is no URL preview field and no place ID field. The panel title under `skyro.wtf` reads `TP GUARD BI PASS`.
 
 ## Lua helper
 
-`lua/skyro_wtf.lua` is a universal feed tap with no function hooks. It does not read feed URLs or tokens from globals. It wraps the global calls every other auto joiner already uses, logs every new job id in a small in-game panel, and sends `roblox://experiences/start?placeId=<id>&gameInstanceId=<job>` through the first available executor request function. `REJOIN` reads the current `game.JobId` and sends that same URI even when it is the server you are already in. `AUTO ON`, `REJOIN`, `RECONNECT`, and `CLEAR` sit in the header; captured rows have their own `JOIN` button.
+`lua/skyro_wtf.lua` is a universal feed tap with no function hooks. It does not read feed URLs or tokens from globals. It wraps the global calls every other auto joiner already uses, logs every new job id in a small in-game panel, and sends `roblox://experiences/start?placeId=<id>&gameInstanceId=<job>` through the first available executor request function. `REJOIN` and `RECONNECT` both read the current `game.JobId` and send that same URI even when it is the server you are already in. `AUTO ON`, `REJOIN`, `RECONNECT`, and `CLEAR` sit in the header; captured rows have their own `JOIN` button.
 
 Taps:
 
@@ -84,7 +84,7 @@ Taps:
 
 Job ids are pulled from `jobId`, `serverId`, `gameInstanceId`, and from `roblox://experiences/start?...`, `roblox://placeId=...`, or `https://www.roblox.com/games/start?...` links anywhere in tapped data. The deep link is attempted `Retry` times with `Delay Between Each Join` between attempts. If the executor refuses the scheme, the helper falls back through `ExperienceService:LaunchExperience`, `TeleportService:TeleportToPlaceInstance`, web start, `setclipboard`, and `GuiService:OpenBrowserWindow`.
 
-Captured jobs are saved to `tp_guard/server.json`; the last deep link, source, timing, and job id are written to `tp_guard/rejoin.txt`. The automatic tap ignores duplicate job ids and the server you are already in; the `REJOIN` button forces the current `game.JobId` through the same deep link path. The desktop joiner powers itself off after its own send; the Lua helper has its own `AUTO` toggle.
+Captured jobs are saved to `tp_guard/server.json`; the last deep link, source, timing, and job id are written to `tp_guard/rejoin.txt`. The automatic tap ignores duplicate job ids and the server you are already in; the `REJOIN` and `RECONNECT` buttons both force the current `game.JobId` through the same deep link path. The desktop joiner powers itself off after its own send; the Lua helper has its own `AUTO` toggle.
 
 ## Layout details
 

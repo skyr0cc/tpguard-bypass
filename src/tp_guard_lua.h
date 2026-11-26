@@ -670,10 +670,14 @@ end)
 
 ReconnBtn.MouseButton1Click:Connect(function()
     local placeId, jobId = currentServer()
+    if not jobId or jobId == "" then
+        addLog("ERR", "No current job id - wait until you are in a server")
+        return
+    end
     task.spawn(function()
-        if jobId and openDeepLink(placeId, jobId, "reconnect") then return end
-        local ok, err = pcall(function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
-        addLog(ok and "OK" or "ERR", ok and "Public teleport sent" or ("Reconnect failed: " .. tostring(err)))
+        -- Same forced-current path as REJOIN. openDeepLink carries placeId and
+        -- jobId through its fallbacks; no public teleport loses the server.
+        openDeepLink(placeId, jobId, "reconnect button", true)
     end)
 end)
 
