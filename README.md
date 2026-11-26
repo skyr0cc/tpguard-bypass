@@ -1,6 +1,6 @@
-# skyro.wtf — Deep Link GUI
+# skyro.wtf — TP Guard BI Pass GUI
 
-Small GUI-only Windows shell with editable join timing, retry count, smooth side scrolling, a top-most toggle, a top-bar power switch, and a visible `assets/login.jpg` backdrop.
+Small Windows shell with editable join timing, retry count, smooth side scrolling, a top-most toggle, a top-bar power switch, a generated Lua rejoin helper, and a visible `assets/login.jpg` backdrop.
 
 ![skyro.wtf background](assets/login.jpg)
 
@@ -60,15 +60,21 @@ Window size is `600 x 400`. Drag the top bar to move it; `x` closes it and `Esc`
 
 | Control | Behaviour |
 | --- | --- |
-| Power | Left of `TOP` in the top-right cluster. Toggles the GUI service state between `OFF` and `ON`. The `REJOIN` button stays disabled while off. |
+| Power | Left of `TOP` in the top-right cluster. Toggles the GUI service state between `OFF` and `ON`. The `REJOIN` button stays disabled while off. Clicking it cancels an armed auto-stop. |
 | TOP | Toggles `SetWindowPos` between `HWND_TOPMOST` and `HWND_NOTOPMOST`. |
 | Timing | `Delay Between Each Join` defaults to `0.15` seconds and clamps to `0.01..60.00`. `Retry` defaults to `10` and clamps to `1..1000`. |
-| REJOIN | Full-width button with a short accent pulse on click. Available only while power is on. GUI state only. |
-| Instructions | Two steps in the panel: click the power button, then set timing and press `REJOIN`. |
+| REJOIN | Full-width button with a short accent pulse. Sends the rejoin, then powers the joiner off after `1.2` s so it stays stopped until you turn it on again. |
+| Instructions | Three steps in the panel: click power, set timing and press `REJOIN`, then let the join send power off. |
 | GET LUA SCRIPT | Creates `lua/skyro_wtf.lua` beside the exe using the current delay and retry values. The panel then tells you to put the file in your auto execute folder. |
 | Scrolling | Mouse wheel over the content eases the scroll target; the slim rail on the right can be clicked or dragged. Both are smoothed with an exponential blend. |
 
-The timing card sits at the top. The locked target, queue, and controls cards are gone; there is no URL preview field and no place ID field.
+The timing card sits at the top. The locked target, queue, and controls cards are gone; there is no URL preview field and no place ID field. The panel title under `skyro.wtf` reads `TP GUARD BI PASS`.
+
+## Lua helper
+
+`lua/skyro_wtf.lua` creates a `REJOIN` button in `CoreGui`, falling back to `PlayerGui`. While enabled it reads `game.PlaceId` and `game.JobId`, builds `roblox://placeId=<id>&gameInstanceId=<job>`, saves `tp_guard/rejoin.txt` with `writefile` including the button position and current timing values, then opens the deep link through `syn.request`, `request`, `http_request`, `setclipboard`, or `GuiService:OpenBrowserWindow`.
+
+After a send the script button reads `TURN ON`. Clicking it again re-arms the helper. The desktop joiner powers itself off after each send.
 
 ## Layout details
 
@@ -86,7 +92,7 @@ MSVC builds use `/MT`; MinGW builds use `-static -static-libgcc -static-libstdc+
 
 ## Notes
 
-- The generated Lua file carries the current delay and retry values plus a `getgenv` export. There is no listener, worker, or deep-link launch path in `src/skyro_wtf.cpp`.
+- The generated Lua file carries the current delay and retry values, exports them through `getgenv`, and opens the deep link from its own button. `src/skyro_wtf.cpp` has no listener or worker loop.
 - `assets/login.jpg` is drawn full-window with aspect-preserving cover cropping.
 - If `assets/login.jpg` is missing, the background falls back to a purple gradient.
 - Dear ImGui 1.90.9 is vendored under `vendor/imgui` with its MIT license; no external package manager is needed.

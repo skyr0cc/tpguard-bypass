@@ -38,7 +38,7 @@ namespace {
 constexpr int kWindowWidth = 600;
 constexpr int kWindowHeight = 400;
 constexpr int kTopBarHeight = 56;
-constexpr float kContentHeight = 460.0f;
+constexpr float kContentHeight = 480.0f;
 constexpr float kDefaultDelaySeconds = 0.15f;
 constexpr int kDefaultRetryCount = 10;
 constexpr float kMinDelaySeconds = 0.01f;
@@ -79,6 +79,7 @@ float g_scrollCurrent = 0.0f;
 float g_scrollMax = 0.0f;
 std::string g_scriptMessage;
 float g_scriptPulse = 0.0f;
+float g_autoStopTimer = 0.0f;
 
 std::string WideToUtf8(const std::wstring& value) {
     int needed = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
@@ -99,15 +100,91 @@ std::wstring ModuleDirectory() {
 }
 
 std::string BuildLuaScript() {
-    char buffer[768];
-    std::snprintf(buffer, sizeof(buffer),
-                  "-- skyro.wtf deep link helper\n"
-                  "-- Copy this file into your auto execute folder.\n"
-                  "local config = { delay = %.2f, retry = %d }\n"
-                  "if getgenv then getgenv().skyro_wtf = config end\n"
-                  "print(string.format('[skyro.wtf] loaded - delay %.2fs, retry %d', config.delay, config.retry))\n"
-                  "return config\n",
-                  g_delaySeconds, g_retryCount, g_delaySeconds, g_retryCount);
+    char buffer[4096];
+    std::snprintf(buffer, sizeof(buffer), R"lua(-- tp guard bi pass - rejoin helper
+-- Copy this file into your auto execute folder.
+-- Reads the current game JobId and opens the deep link from the REJOIN button.
+local config = { delay = %.2f, retry = %d }
+if getgenv then getgenv().tp_guard_bi_pass = config end
+
+local function openDeepLink(url)
+    if syn and syn.request then
+        syn.request({ Url = url, Method = "GET" })
+        return true
+    end
+    if request then
+        request({ Url = url, Method = "GET" })
+        return true
+    end
+    if http_request then
+        http_request({ Url = url, Method = "GET" })
+        return true
+    end
+    if setclipboard then
+        setclipboard(url)
+        return true
+    end
+    return false
+end
+
+local function saveRejoin(pos, placeId, jobId, url)
+    if makefolder then pcall(makefolder, "tp_guard") end
+    if writefile then
+        local payload = string.format("pos=%%s\nplaceId=%%d\njobId=%%s\nlink=%%s\ndelay=%%.2f\nretry=%%d\n",
+            pos, placeId, jobId, url, config.delay, config.retry)
+        pcall(writefile, "tp_guard/rejoin.txt", payload)
+    end
+end
+
+local players = game:GetService("Players")
+local localPlayer = players.LocalPlayer
+local ok, coreGui = pcall(function() return game:GetService("CoreGui") end)
+local parent = ok and coreGui or localPlayer.PlayerGui
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "TpGuardBiPassRejoin"
+gui.ResetOnSpawn = false
+gui.Parent = parent
+
+local button = Instance.new("TextButton")
+button.Name = "Rejoin"
+button.Size = UDim2.new(0, 188, 0, 46)
+button.Position = UDim2.new(0.5, -94, 0.76, 0)
+button.BackgroundColor3 = Color3.fromRGB(176, 79, 255)
+button.TextColor3 = Color3.fromRGB(255, 255, 255)
+button.Font = Enum.Font.SourceSansBold
+button.TextSize = 18
+button.Text = "REJOIN"
+button.Parent = gui
+
+local enabled = true
+
+button.MouseButton1Click:Connect(function()
+    if not enabled then
+        enabled = true
+        button.Text = "REJOIN"
+        button.BackgroundColor3 = Color3.fromRGB(176, 79, 255)
+        return
+    end
+
+    local placeId = game.PlaceId
+    local jobId = game.JobId or ""
+    local url = string.format("roblox://placeId=%%d&gameInstanceId=%%s", placeId, jobId)
+    local pos = string.format("%%.3f,%%.3f", button.Position.X.Scale, button.Position.Y.Scale)
+
+    saveRejoin(pos, placeId, jobId, url)
+
+    if openDeepLink(url) then
+        enabled = false
+        button.Text = "TURN ON"
+        button.BackgroundColor3 = Color3.fromRGB(84, 84, 96)
+    end
+end)
+
+print(string.format("[tp guard bi pass] loaded - delay %%.2fs, retry %%d", config.delay, config.retry))
+return config
+)lua",
+                  g_delaySeconds, g_retryCount);
     return std::string(buffer);
 }
 
@@ -449,7 +526,7 @@ void DrawTopBar() {
     drawList->AddText(g_fontBold, 21.0f, logoMin + ImVec2(9.0f, 4.0f), IM_COL32(255, 255, 255, 255), "S");
 
     drawList->AddText(g_fontBold, 21.0f, ImVec2(62.0f, 9.0f), IM_COL32(250, 248, 255, 255), "skyro.wtf");
-    drawList->AddText(g_fontSmall, 11.0f, ImVec2(63.0f, 34.0f), IM_COL32(180, 166, 202, 255), "DEEP LINK");
+    drawList->AddText(g_fontSmall, 11.0f, ImVec2(63.0f, 34.0f), IM_COL32(180, 166, 202, 255), "TP GUARD BI PASS");
 
     ImVec2 powerPos(width - 196.0f, 14.0f);
     ImVec2 powerCenter = powerPos + ImVec2(15.0f, 14.0f);
@@ -464,6 +541,7 @@ void DrawTopBar() {
     if (ImGui::InvisibleButton("##power", ImVec2(30.0f, 28.0f))) {
         g_serverOn = !g_serverOn;
         g_serverPulse = 1.0f;
+        g_autoStopTimer = 0.0f;
     }
     bool powerHovered = ImGui::IsItemHovered();
     ImU32 powerColor = g_serverOn ? AccentU32(0.98f)
@@ -526,13 +604,23 @@ void DrawInterface() {
     g_scrollTarget = std::clamp(g_scrollTarget, 0.0f, g_scrollMax);
     g_scrollCurrent = std::clamp(g_scrollCurrent, 0.0f, g_scrollMax);
 
+    if (g_autoStopTimer > 0.0f) {
+        g_autoStopTimer -= ImGui::GetIO().DeltaTime;
+        if (g_autoStopTimer <= 0.0f) {
+            g_autoStopTimer = 0.0f;
+            g_serverOn = false;
+            g_serverPulse = 1.0f;
+            g_scriptMessage = "Join sent. Power is off until you turn it on again.";
+        }
+    }
+
     ImGui::SetCursorScreenPos(contentStart);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ImGui::BeginChild("content", contentSize, 0,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus);
     ImGui::SetScrollY(g_scrollCurrent);
 
-    ImGui::TextColored(AccentColor(), "DEEP LINK");
+    ImGui::TextColored(AccentColor(), "TP GUARD BI PASS");
     ImGui::PushFont(g_fontBold);
     ImGui::Text("Rejoin");
     ImGui::PopFont();
@@ -568,12 +656,15 @@ void DrawInterface() {
         g_rejoinPulse -= ImGui::GetIO().DeltaTime * 1.8f;
         if (g_rejoinPulse < 0.0f) g_rejoinPulse = 0.0f;
     }
-    if (PrimaryButton("REJOIN", ImVec2(-1.0f, 34.0f))) g_rejoinPulse = 1.0f;
+    if (PrimaryButton("REJOIN", ImVec2(-1.0f, 34.0f))) {
+        g_rejoinPulse = 1.0f;
+        g_autoStopTimer = 1.2f;
+    }
     ImGui::EndDisabled();
 
     ImGui::Spacing();
 
-    BeginCard("instructions_card", ImVec2(-1.0f, 92.0f));
+    BeginCard("instructions_card", ImVec2(-1.0f, 116.0f));
     ImGui::TextColored(AccentColor(), "START");
     ImGui::TextDisabled("1");
     ImGui::SameLine(34.0f);
@@ -581,6 +672,9 @@ void DrawInterface() {
     ImGui::TextDisabled("2");
     ImGui::SameLine(34.0f);
     ImGui::Text("Set delay and retry, then press REJOIN.");
+    ImGui::TextDisabled("3");
+    ImGui::SameLine(34.0f);
+    ImGui::Text("Join sends and power turns off.");
     EndCard();
 
     ImGui::Spacing();
