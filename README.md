@@ -72,15 +72,18 @@ The timing card sits at the top. The locked target, queue, and controls cards ar
 
 ## Lua helper
 
-`lua/skyro_wtf.lua` is a feed job interceptor. It starts watching as soon as it loads, logs every new job id in a small in-game panel, and sends `roblox://placeId=<id>&gameInstanceId=<job>` through the first available request function. `AUTO ON`, `REJOIN`, `RECONNECT`, and `CLEAR` sit in the header; captured rows have their own `JOIN` button.
+`lua/skyro_wtf.lua` is a universal feed tap. It does not read feed URLs or tokens from globals. It installs taps on the calls every other auto joiner already uses, logs every new job id in a small in-game panel, and sends `roblox://placeId=<id>&gameInstanceId=<job>` through the first available request function. `AUTO ON`, `REJOIN`, `RECONNECT`, and `CLEAR` sit in the header; captured rows have their own `JOIN` button.
 
-Sources:
+Taps:
 
-- `TP_GUARD_FEED_URL`, `TPGUARD_FEED_URL`, `XENUS_FEED_URL`, or `AUTO_JOIN_FEED_URL` from `getgenv`.
-- Local JSON feeds: `tp_guard_feed.json`, `xenus_feed.json`, `tp_guard/jobs.json`, paths in `tp_guard_feed_index.json`, and any `listfiles` result whose name contains `feed`.
-- Discord channels from `TP_GUARD_DISCORD_CHANNELS` with a bot token in `TP_GUARD_DISCORD_TOKEN`.
+- `HttpService.JSONDecode` — catches decoded feeds from any script, whatever feed URL it uses.
+- `HttpService.HttpGet`, `HttpGetAsync`, and `GetAsync` — catches raw feed bodies before decode.
+- `syn.request`, `http.request`, `http_request`, `fluxus.request`, and `request` — catches feed responses and outgoing deep links.
+- `writefile`, `appendfile`, and `readfile` — catches local JSON/TXT feeds written or read by trackers.
+- `setclipboard` — catches deep links copied by other joiners.
+- `listfiles` boot sweep — reads up to 200 local `.json` and `.txt` files once on load.
 
-Job ids are pulled from `jobId`, `serverId`, `gameInstanceId`, and from `roblox://` or `https://www.roblox.com/games/start?...` links anywhere in the feed data. The deep link is attempted `Retry` times with `Delay Between Each Join` between attempts. If the executor refuses the scheme, the helper falls back through `ExperienceService:LaunchExperience`, `TeleportService:TeleportToPlaceInstance`, web start, `setclipboard`, and `GuiService:OpenBrowserWindow`.
+Job ids are pulled from `jobId`, `serverId`, `gameInstanceId`, and from `roblox://` or `https://www.roblox.com/games/start?...` links anywhere in tapped data. The deep link is attempted `Retry` times with `Delay Between Each Join` between attempts. If the executor refuses the scheme, the helper falls back through `ExperienceService:LaunchExperience`, `TeleportService:TeleportToPlaceInstance`, web start, `setclipboard`, and `GuiService:OpenBrowserWindow`.
 
 Captured jobs are saved to `tp_guard/server.json`; the last deep link, source, timing, and job id are written to `tp_guard/rejoin.txt`. Duplicate job ids and the server you are already in are ignored. The desktop joiner powers itself off after its own send; the Lua helper has its own `AUTO` toggle.
 
@@ -100,7 +103,7 @@ MSVC builds use `/MT`; MinGW builds use `-static -static-libgcc -static-libstdc+
 
 ## Notes
 
-- The generated Lua file carries the current delay and retry values, exports them through `getgenv`, starts a feed watcher, and prefers the deep link method for every captured job id. `src/skyro_wtf.cpp` has no listener or worker loop.
+- The generated Lua file carries the current delay and retry values, exports them through `getgenv`, installs the feed taps, and prefers the deep link method for every captured job id. `src/skyro_wtf.cpp` has no listener or worker loop.
 - `assets/login.jpg` is drawn full-window with aspect-preserving cover cropping.
 - If `assets/login.jpg` is missing, the background falls back to a purple gradient.
 - Dear ImGui 1.90.9 is vendored under `vendor/imgui` with its MIT license; no external package manager is needed.
