@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -37,7 +38,7 @@ namespace {
 constexpr int kWindowWidth = 600;
 constexpr int kWindowHeight = 400;
 constexpr int kTopBarHeight = 56;
-constexpr float kContentHeight = 500.0f;
+constexpr float kContentHeight = 460.0f;
 constexpr float kDefaultDelaySeconds = 0.15f;
 constexpr int kDefaultRetryCount = 10;
 constexpr float kMinDelaySeconds = 0.01f;
@@ -76,6 +77,8 @@ float g_pendingWheel = 0.0f;
 float g_scrollTarget = 0.0f;
 float g_scrollCurrent = 0.0f;
 float g_scrollMax = 0.0f;
+std::string g_scriptMessage;
+float g_scriptPulse = 0.0f;
 
 std::string WideToUtf8(const std::wstring& value) {
     int needed = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
@@ -93,6 +96,36 @@ std::wstring ModuleDirectory() {
     size_t slash = full.find_last_of(L"\\/");
     if (slash == std::wstring::npos) return L"";
     return full.substr(0, slash + 1);
+}
+
+std::string BuildLuaScript() {
+    char buffer[768];
+    std::snprintf(buffer, sizeof(buffer),
+                  "-- skyro.wtf deep link helper\n"
+                  "-- Copy this file into your auto execute folder.\n"
+                  "local config = { delay = %.2f, retry = %d }\n"
+                  "if getgenv then getgenv().skyro_wtf = config end\n"
+                  "print(string.format('[skyro.wtf] loaded - delay %.2fs, retry %d', config.delay, config.retry))\n"
+                  "return config\n",
+                  g_delaySeconds, g_retryCount, g_delaySeconds, g_retryCount);
+    return std::string(buffer);
+}
+
+bool WriteLuaScript() {
+    std::wstring directory = ModuleDirectory();
+    std::wstring scriptDirectory = directory.empty() ? L"lua" : directory + L"lua";
+    CreateDirectoryW(scriptDirectory.c_str(), nullptr);
+
+    std::wstring scriptPath = scriptDirectory + L"\\skyro_wtf.lua";
+    HANDLE file = CreateFileW(scriptPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+
+    std::string script = BuildLuaScript();
+    DWORD written = 0;
+    BOOL ok = WriteFile(file, script.data(), static_cast<DWORD>(script.size()), &written, nullptr);
+    CloseHandle(file);
+    return ok != FALSE && written == static_cast<DWORD>(script.size());
 }
 
 ImVec4 AccentColor() {
@@ -503,11 +536,11 @@ void DrawInterface() {
     ImGui::PushFont(g_fontBold);
     ImGui::Text("Rejoin");
     ImGui::PopFont();
-    ImGui::TextDisabled("Set the delay and retry count, then run the queue.");
+    ImGui::TextDisabled("Set the timing, then run the rejoin.");
 
     ImGui::Spacing();
 
-    BeginCard("timing_card", ImVec2(-1.0f, 122.0f));
+    BeginCard("timing_card", ImVec2(-1.0f, 150.0f));
     ImGui::TextColored(AccentColor(), "TIMING");
     g_delaySeconds = std::clamp(g_delaySeconds, kMinDelaySeconds, kMaxDelaySeconds);
     g_retryCount = std::clamp(g_retryCount, kMinRetryCount, kMaxRetryCount);
@@ -540,36 +573,36 @@ void DrawInterface() {
 
     ImGui::Spacing();
 
-    BeginCard("queue_card", ImVec2(-1.0f, 116.0f));
-    ImGui::TextColored(AccentColor(), "QUEUE");
-    ImGui::TextDisabled("01");
-    ImGui::SameLine(48.0f);
-    ImGui::Text("Open deep link");
-    ImGui::TextDisabled("02");
-    ImGui::SameLine(48.0f);
-    ImGui::Text("Wait %.2f sec", g_delaySeconds);
-    ImGui::TextDisabled("03");
-    ImGui::SameLine(48.0f);
-    ImGui::Text("Retry %d times", g_retryCount);
-    ImGui::TextDisabled("04");
-    ImGui::SameLine(48.0f);
-    ImGui::Text(g_serverOn ? "Service running" : "Service idle");
+    BeginCard("instructions_card", ImVec2(-1.0f, 92.0f));
+    ImGui::TextColored(AccentColor(), "START");
+    ImGui::TextDisabled("1");
+    ImGui::SameLine(34.0f);
+    ImGui::Text("Click the power button in the top bar.");
+    ImGui::TextDisabled("2");
+    ImGui::SameLine(34.0f);
+    ImGui::Text("Set delay and retry, then press REJOIN.");
     EndCard();
 
     ImGui::Spacing();
 
-    BeginCard("controls_card", ImVec2(-1.0f, 108.0f));
-    ImGui::TextColored(AccentColor(), "CONTROLS");
-    ImGui::TextDisabled("Wheel / rail");
-    ImGui::SameLine(150.0f);
-    ImGui::Text("smooth scroll");
-    ImGui::TextDisabled("TOP");
-    ImGui::SameLine(150.0f);
-    ImGui::Text(g_topMost ? "always on top" : "normal window");
-    ImGui::TextDisabled("Power");
-    ImGui::SameLine(150.0f);
-    ImGui::Text(g_serverOn ? "on" : "off");
-    EndCard();
+    if (g_scriptPulse > 0.0f) {
+        ImVec2 buttonMin = ImGui::GetCursorScreenPos();
+        ImVec2 buttonMax = buttonMin + ImVec2(ImGui::GetContentRegionAvail().x, 34.0f);
+        ImGui::GetWindowDrawList()->AddRect(buttonMin, buttonMax, AccentU32(g_scriptPulse * 0.55f), 9.0f, 0, 2.0f);
+        g_scriptPulse -= ImGui::GetIO().DeltaTime * 1.8f;
+        if (g_scriptPulse < 0.0f) g_scriptPulse = 0.0f;
+    }
+    if (PrimaryButton("GET LUA SCRIPT", ImVec2(-1.0f, 34.0f))) {
+        g_scriptMessage = WriteLuaScript()
+                              ? "Saved to lua\\skyro_wtf.lua - put it in your auto execute folder."
+                              : "Could not write lua\\skyro_wtf.lua.";
+        g_scriptPulse = 1.0f;
+    }
+
+    if (!g_scriptMessage.empty()) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("%s", g_scriptMessage.c_str());
+    }
 
     ImGui::EndChild();
     ImGui::PopStyleColor();
