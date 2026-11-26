@@ -72,9 +72,17 @@ The timing card sits at the top. The locked target, queue, and controls cards ar
 
 ## Lua helper
 
-`lua/skyro_wtf.lua` creates a `REJOIN` button in `CoreGui`, falling back to `PlayerGui`. While enabled it reads `game.PlaceId` and `game.JobId`, builds `roblox://placeId=<id>&gameInstanceId=<job>`, saves `tp_guard/rejoin.txt` with `writefile` including the button position and current timing values, then opens the deep link through `syn.request`, `request`, `http_request`, `setclipboard`, or `GuiService:OpenBrowserWindow`.
+`lua/skyro_wtf.lua` is a feed job interceptor. It starts watching as soon as it loads, logs every new job id in a small in-game panel, and sends `roblox://placeId=<id>&gameInstanceId=<job>` through the first available request function. `AUTO ON`, `REJOIN`, `RECONNECT`, and `CLEAR` sit in the header; captured rows have their own `JOIN` button.
 
-After a send the script button reads `TURN ON`. Clicking it again re-arms the helper. The desktop joiner powers itself off after each send.
+Sources:
+
+- `TP_GUARD_FEED_URL`, `TPGUARD_FEED_URL`, `XENUS_FEED_URL`, or `AUTO_JOIN_FEED_URL` from `getgenv`.
+- Local JSON feeds: `tp_guard_feed.json`, `xenus_feed.json`, `tp_guard/jobs.json`, paths in `tp_guard_feed_index.json`, and any `listfiles` result whose name contains `feed`.
+- Discord channels from `TP_GUARD_DISCORD_CHANNELS` with a bot token in `TP_GUARD_DISCORD_TOKEN`.
+
+Job ids are pulled from `jobId`, `serverId`, `gameInstanceId`, and from `roblox://` or `https://www.roblox.com/games/start?...` links anywhere in the feed data. The deep link is attempted `Retry` times with `Delay Between Each Join` between attempts. If the executor refuses the scheme, the helper falls back through `ExperienceService:LaunchExperience`, `TeleportService:TeleportToPlaceInstance`, web start, `setclipboard`, and `GuiService:OpenBrowserWindow`.
+
+Captured jobs are saved to `tp_guard/server.json`; the last deep link, source, timing, and job id are written to `tp_guard/rejoin.txt`. Duplicate job ids and the server you are already in are ignored. The desktop joiner powers itself off after its own send; the Lua helper has its own `AUTO` toggle.
 
 ## Layout details
 
@@ -92,7 +100,7 @@ MSVC builds use `/MT`; MinGW builds use `-static -static-libgcc -static-libstdc+
 
 ## Notes
 
-- The generated Lua file carries the current delay and retry values, exports them through `getgenv`, and opens the deep link from its own button. `src/skyro_wtf.cpp` has no listener or worker loop.
+- The generated Lua file carries the current delay and retry values, exports them through `getgenv`, starts a feed watcher, and prefers the deep link method for every captured job id. `src/skyro_wtf.cpp` has no listener or worker loop.
 - `assets/login.jpg` is drawn full-window with aspect-preserving cover cropping.
 - If `assets/login.jpg` is missing, the background falls back to a purple gradient.
 - Dear ImGui 1.90.9 is vendored under `vendor/imgui` with its MIT license; no external package manager is needed.

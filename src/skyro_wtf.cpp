@@ -14,11 +14,13 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_dx11.h"
+#include "tp_guard_lua.h"
 
 #ifdef _MSC_VER
 #pragma comment(lib, "gdiplus.lib")
@@ -99,93 +101,26 @@ std::wstring ModuleDirectory() {
     return full.substr(0, slash + 1);
 }
 
+std::string ReplaceAll(std::string value, const std::string& from, const std::string& to) {
+    if (from.empty()) return value;
+    size_t position = 0;
+    while ((position = value.find(from, position)) != std::string::npos) {
+        value.replace(position, from.size(), to);
+        position += to.size();
+    }
+    return value;
+}
+
 std::string BuildLuaScript() {
-    char buffer[4096];
-    std::snprintf(buffer, sizeof(buffer), R"lua(-- tp guard bi pass - rejoin helper
--- Copy this file into your auto execute folder.
--- Reads the current game JobId and opens the deep link from the REJOIN button.
-local config = { delay = %.2f, retry = %d }
-if getgenv then getgenv().tp_guard_bi_pass = config end
+    char delay[32];
+    char retry[32];
+    std::snprintf(delay, sizeof(delay), "%.2f", g_delaySeconds);
+    std::snprintf(retry, sizeof(retry), "%d", g_retryCount);
 
-local function openDeepLink(url)
-    if syn and syn.request then
-        syn.request({ Url = url, Method = "GET" })
-        return true
-    end
-    if request then
-        request({ Url = url, Method = "GET" })
-        return true
-    end
-    if http_request then
-        http_request({ Url = url, Method = "GET" })
-        return true
-    end
-    if setclipboard then
-        setclipboard(url)
-        return true
-    end
-    return false
-end
-
-local function saveRejoin(pos, placeId, jobId, url)
-    if makefolder then pcall(makefolder, "tp_guard") end
-    if writefile then
-        local payload = string.format("pos=%%s\nplaceId=%%d\njobId=%%s\nlink=%%s\ndelay=%%.2f\nretry=%%d\n",
-            pos, placeId, jobId, url, config.delay, config.retry)
-        pcall(writefile, "tp_guard/rejoin.txt", payload)
-    end
-end
-
-local players = game:GetService("Players")
-local localPlayer = players.LocalPlayer
-local ok, coreGui = pcall(function() return game:GetService("CoreGui") end)
-local parent = ok and coreGui or localPlayer.PlayerGui
-
-local gui = Instance.new("ScreenGui")
-gui.Name = "TpGuardBiPassRejoin"
-gui.ResetOnSpawn = false
-gui.Parent = parent
-
-local button = Instance.new("TextButton")
-button.Name = "Rejoin"
-button.Size = UDim2.new(0, 188, 0, 46)
-button.Position = UDim2.new(0.5, -94, 0.76, 0)
-button.BackgroundColor3 = Color3.fromRGB(176, 79, 255)
-button.TextColor3 = Color3.fromRGB(255, 255, 255)
-button.Font = Enum.Font.SourceSansBold
-button.TextSize = 18
-button.Text = "REJOIN"
-button.Parent = gui
-
-local enabled = true
-
-button.MouseButton1Click:Connect(function()
-    if not enabled then
-        enabled = true
-        button.Text = "REJOIN"
-        button.BackgroundColor3 = Color3.fromRGB(176, 79, 255)
-        return
-    end
-
-    local placeId = game.PlaceId
-    local jobId = game.JobId or ""
-    local url = string.format("roblox://placeId=%%d&gameInstanceId=%%s", placeId, jobId)
-    local pos = string.format("%%.3f,%%.3f", button.Position.X.Scale, button.Position.Y.Scale)
-
-    saveRejoin(pos, placeId, jobId, url)
-
-    if openDeepLink(url) then
-        enabled = false
-        button.Text = "TURN ON"
-        button.BackgroundColor3 = Color3.fromRGB(84, 84, 96)
-    end
-end)
-
-print(string.format("[tp guard bi pass] loaded - delay %%.2fs, retry %%d", config.delay, config.retry))
-return config
-)lua",
-                  g_delaySeconds, g_retryCount);
-    return std::string(buffer);
+    std::string script = tp_guard::kLuaScript;
+    script = ReplaceAll(std::move(script), "__TP_GUARD_DELAY__", delay);
+    script = ReplaceAll(std::move(script), "__TP_GUARD_RETRY__", retry);
+    return script;
 }
 
 bool WriteLuaScript() {

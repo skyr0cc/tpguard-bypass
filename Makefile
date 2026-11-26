@@ -14,12 +14,13 @@ IMGUI_SOURCES := \
 	vendor/imgui/backends/imgui_impl_dx11.cpp
 
 SOURCES := src/skyro_wtf.cpp $(IMGUI_SOURCES)
+HEADERS := src/tp_guard_lua.h
 
 .PHONY: all clean
 
 all: $(TARGET)
 
-$(TARGET): $(SOURCES)
+$(TARGET): $(SOURCES) $(HEADERS)
 	mkdir -p build/assets
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(SOURCES) -o $(TARGET) $(LDLIBS)
 	cp -R assets/. build/assets/
