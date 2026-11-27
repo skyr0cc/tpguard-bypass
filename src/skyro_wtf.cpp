@@ -40,7 +40,7 @@ namespace {
 constexpr int kWindowWidth = 600;
 constexpr int kWindowHeight = 400;
 constexpr int kTopBarHeight = 56;
-constexpr float kContentHeight = 480.0f;
+constexpr float kContentHeight = 535.0f;
 constexpr float kDefaultDelaySeconds = 0.15f;
 constexpr int kDefaultRetryCount = 10;
 constexpr float kMinDelaySeconds = 0.01f;
@@ -610,6 +610,12 @@ void DrawInterface() {
     ImGui::TextDisabled("3");
     ImGui::SameLine(34.0f);
     ImGui::Text("Join sends and power turns off.");
+    EndCard();
+
+    ImGui::Spacing();
+
+    BeginCard("aj_list_card", ImVec2(-1.0f, 46.0f));
+    ImGui::TextColored(AccentColor(), "SUPPORTED AJ LIST: ODYSEY (confirmed)");
     EndCard();
 
     ImGui::Spacing();

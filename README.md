@@ -2,6 +2,8 @@
 
 ![skyro.wtf](assets/skyro-logo.png)
 
+Credits: @f9nkz on Discord for all testing.
+
 Windows GUI and executor Lua helper for current-server deep links. Power starts **ON**. Saved logs are never loaded back in.
 
 [![Watch the tutorial](media/tpguard-tutorial-thumb.png)](media/tpguard-tutorial.mp4)
