@@ -56,6 +56,7 @@ local Config = {
     DELAY       = __TP_GUARD_DELAY__,
     RETRY       = __TP_GUARD_RETRY__,
     AJS_STOP    = true,
+    ODY_QUEUE   = true,
     ODY_SCAN    = 2,
     MAX_LOGS    = 60,
     LOG_FILE    = "tp_guard/rejoin.txt",
@@ -403,6 +404,69 @@ local function addLog(level, message, jobData)
     end
 end
 
+local function setGlobalValue(name, value)
+    local targets = { env }
+    if env ~= _G then targets[#targets + 1] = _G end
+    local changed = false
+    for _, target in ipairs(targets) do
+        if type(target) == "table" then
+            local ok = pcall(function()
+                if rawset then rawset(target, name, value) else target[name] = value end
+            end)
+            if ok then changed = true end
+        end
+    end
+    return changed
+end
+
+local function queueOnTeleportScript(source)
+    for _, name in ipairs({ "queue_on_teleport", "queueonteleport", "queueteleport" }) do
+        local fn = rawGlobal(name)
+        if type(fn) == "function" then
+            local ok, err = pcall(fn, source)
+            return ok, name, err
+        end
+    end
+    return false, nil, "no queue_on_teleport function"
+end
+
+local function odyArmQueue(placeId, jobId, source)
+    if not Config.ODY_QUEUE then return false end
+    local targetJob = tostring(jobId or game.JobId or "")
+    if targetJob == "" then return false end
+
+    -- Keep the queued marker valid Lua even if a payload carried a malformed id.
+    local safeJob = targetJob:match("^[%w%-]+$") and targetJob or tostring(game.JobId or "")
+    local marker = string.format([[
+local job = %q
+local place = %d
+local g = (typeof(getgenv) == "function" and getgenv()) or _G
+if type(g) == "table" then
+    pcall(function() if rawset then rawset(g, "__odyssey_queued", true) else g.__odyssey_queued = true end end)
+    pcall(function() if rawset then rawset(g, "__odyssey_entry_job", job) else g.__odyssey_entry_job = job end end)
+    pcall(function() if rawset then rawset(g, "__odyssey_guard_queue_version", 2) else g.__odyssey_guard_queue_version = 2 end end)
+    local boot = g.__aj_boot
+    if type(boot) == "table" then
+        pcall(function() boot.set_panel_live(false) end)
+        pcall(function() boot.stop("tp guard queued") end)
+        pcall(function() boot.shutdown("tp guard queued") end)
+    end
+end
+]], safeJob, tonumber(placeId) or Config.PLACE_ID)
+
+    setGlobalValue("__odyssey_queued", true)
+    setGlobalValue("__odyssey_entry_job", targetJob)
+    setGlobalValue("__odyssey_guard_queue_version", 2)
+
+    local ok, name, err = queueOnTeleportScript(marker)
+    if ok then
+        addLog("OK", "ODY queue marker armed via " .. tostring(name) .. ": " .. tostring(safeJob))
+    else
+        addLog("WARN", "ODY queue marker skipped: " .. tostring(err))
+    end
+    return ok
+end
+
 local function ajsRefresh(source, announce)
     local before = #AJS.found
     AJS.boot = findAjsBoot()
@@ -579,6 +643,7 @@ openDeepLink = function(placeId, jobId, source, allowCurrent)
         addLog("INFO", "Rejoining current server " .. tostring(jobId))
     end
 
+    odyArmQueue(placeId, jobId, "deep link " .. tostring(source or "source"))
     ajsStop("deep link " .. tostring(source or "source"))
 
     local link = buildLink(placeId, jobId)

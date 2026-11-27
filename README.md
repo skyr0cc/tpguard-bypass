@@ -73,6 +73,8 @@ Each build copies `assets/` next to the executable. The logo is for this README;
 - `__aj_boot` and `odyssey_api` are scanned at load, on taps, before deep links, and every 2 seconds for late ODY loads.
 - `RESCAN ODY` in the Lua panel forces an immediate ODY API rescan.
 - Joins are blocked while `AUTO ON` is off.
+- Before a deep link, ODY queue globals are armed and a queued marker is registered so the no-queue teleport guard does not fire.
+- `AJS stop/shutdown` still runs before every deep link.
 - Deep links are parsed from `gameInstanceId` and `placeId` in live data.
 - Captured jobs appear in a small in-game panel with their own `JOIN` button.
 - `AUTO ON`, `RESCAN ODY`, `REJOIN`, `RECONNECT`, and `CLEAR` sit in the Lua panel.
