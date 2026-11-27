@@ -32,6 +32,21 @@ local CLEAR_QUEUE_NAMES = {
     "clearteleportqueue",
 }
 local QUEUE_SENTINEL = "-- TP_GUARD_ODY_QUEUE_MARKER"
+local ODY_MESSAGE_SIGNS = {
+    "ody",
+    "odyssey",
+    "kick",
+    "queue",
+    "teleport",
+    "deeplink",
+    "deep link",
+    "no queue",
+    "not queued",
+    "__aj_boot",
+    "__odyssey",
+    "gameinstanceid",
+    "jobid",
+}
 local ODY_QUEUE_SIGNS = {
     "odyssey",
     "__odyssey",
@@ -80,6 +95,7 @@ local Config = {
     DELAY       = __TP_GUARD_DELAY__,
     RETRY       = __TP_GUARD_RETRY__,
     AJS_STOP    = true,
+    LOG_TAP     = true,
     ODY_QUEUE   = true,
     ODY_WAIT    = 1.2,
     ODY_SCAN    = 2,
@@ -339,6 +355,7 @@ local State = {
     logCount = 0,
     seen = {},
     lastJob = nil,
+    logCapture = false,
 }
 
 local openDeepLink
@@ -370,6 +387,7 @@ local function addLog(level, message, jobData)
     if level == "ERR" then color = Theme.err end
     if level == "OK" then color = Theme.ok end
     if level == "JOB" then color = Theme.accent end
+    if level == "ODY" then color = Theme.accent end
 
     local row = make("Frame", {
         Size = UDim2.new(1, 0, 0, jobData and 46 or 30),
@@ -738,6 +756,13 @@ openDeepLink = function(placeId, jobId, source, allowCurrent)
     end
 
     odyArmQueue(placeId, jobId, "deep link " .. tostring(source or "source"))
+    addLog("ODY", string.format(
+        "globals before link: queued=%s entry=%s qver=%s boot=%s filter=%s",
+        tostring(rawGlobal("__odyssey_queued")),
+        tostring(rawGlobal("__odyssey_entry_job")),
+        tostring(rawGlobal("__odyssey_guard_queue_version")),
+        tostring(type(rawGlobal("__aj_boot"))),
+        tostring(QueueControl.installed)))
     ajsStop("deep link " .. tostring(source or "source"))
 
     local link = buildLink(placeId, jobId)
@@ -870,6 +895,45 @@ local function setGlobal(name, fn)
     local ok = pcall(rawset, env, name, fn)
     if not ok and env ~= _G then ok = pcall(rawset, _G, name, fn) end
     if not ok then addLog("WARN", "Tap skipped for " .. name .. " - read only table") end
+end
+
+local function captureConsole(source, ...)
+    if not Config.LOG_TAP or State.logCapture then return end
+    local count = select("#", ...)
+    if count == 0 then return end
+
+    local parts = {}
+    for index = 1, count do
+        local value = select(index, ...)
+        local text = tostring(value)
+        if text ~= "" then parts[#parts + 1] = text end
+    end
+    local text = table.concat(parts, " ")
+    if text == "" or #text > 2048 then return end
+
+    local lowered = text:lower()
+    for _, sign in ipairs(ODY_MESSAGE_SIGNS) do
+        if string.find(lowered, sign, 1, true) then
+            State.logCapture = true
+            addLog("ODY", source .. ": " .. text)
+            State.logCapture = false
+            return
+        end
+    end
+end
+
+for _, name in ipairs({
+    "print", "warn", "consoleprint", "messagebox",
+    "rconsoleprint", "rconsolewarn", "rconsoleerr", "rconsoleinfo",
+}) do
+    local original = rawget(env, name)
+    if type(original) ~= "function" and env ~= _G then original = rawget(_G, name) end
+    if type(original) == "function" then
+        setGlobal(name, cclosure(function(...)
+            captureConsole(name, ...)
+            return original(...)
+        end))
+    end
 end
 
 for _, name in ipairs({ "request", "writefile", "appendfile", "setclipboard" }) do

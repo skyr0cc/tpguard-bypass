@@ -76,6 +76,8 @@ Each build copies `assets/` next to the executable. The logo is for this README;
 - The teleport queue is filtered at load: ODY queue scripts are dropped by source signature.
 - The teleport queue is cleared at load and again before every deep link, then only a tagged TP Guard marker is queued.
 - The marker initializes ODY globals before `AJS stop/shutdown`, so the no-queue teleport guard does not fire.
+- Console, warn, rconsole, and messagebox output containing ODY/kick/queue/teleport/deep-link text is captured into the panel during the test build.
+- Every deep link logs the armed ODY globals and queue-filter state before the join.
 - Deep links are parsed from `gameInstanceId` and `placeId` in live data.
 - Captured jobs appear in a small in-game panel with their own `JOIN` button.
 - `AUTO ON`, `RESCAN ODY`, `REJOIN`, `RECONNECT`, and `CLEAR` sit in the Lua panel.
