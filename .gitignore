@@ -12,3 +12,7 @@ cmake_install.cmake
 .vs/
 .vscode/
 .DS_Store
+CMakeToSln/
+build.zip
+lua/
+out-*/
