@@ -21,6 +21,30 @@ local function rawGlobal(name)
     if ok then return value end
 end
 
+local QUEUE_NAMES = {
+    "queue_on_teleport",
+    "queueonteleport",
+    "queueteleport",
+}
+local CLEAR_QUEUE_NAMES = {
+    "clear_teleport_queue",
+    "clearqueueonteleport",
+    "clearteleportqueue",
+}
+local QUEUE_SENTINEL = "-- TP_GUARD_ODY_QUEUE_MARKER"
+local ODY_QUEUE_SIGNS = {
+    "odyssey",
+    "__odyssey",
+    "__aj_boot",
+    "teleport_guard",
+    "set_panel_live",
+    "keeps_esp",
+    "auto_join",
+    "gameinstanceid",
+}
+
+local QueueControl = { installed = false, originals = {} }
+
 local ODY_GLOBALS = {
     "__aj_boot",
     "odyssey_api",
@@ -57,6 +81,7 @@ local Config = {
     RETRY       = __TP_GUARD_RETRY__,
     AJS_STOP    = true,
     ODY_QUEUE   = true,
+    ODY_WAIT    = 1.2,
     ODY_SCAN    = 2,
     MAX_LOGS    = 60,
     LOG_FILE    = "tp_guard/rejoin.txt",
@@ -419,8 +444,58 @@ local function setGlobalValue(name, value)
     return changed
 end
 
+local function looksLikeOdyQueue(source)
+    local text = tostring(source or ""):lower()
+    if string.find(text, QUEUE_SENTINEL:lower(), 1, true) then return false end
+    for _, sign in ipairs(ODY_QUEUE_SIGNS) do
+        if string.find(text, sign, 1, true) then return true end
+    end
+    return false
+end
+
+local function installOdyQueueFilter()
+    if QueueControl.installed then return true end
+    local installed = 0
+
+    for _, name in ipairs(QUEUE_NAMES) do
+        local original = rawGlobal(name)
+        if type(original) == "function" then
+            QueueControl.originals[name] = original
+            local wrapper = function(source, ...)
+                if looksLikeOdyQueue(source) then
+                    addLog("OK", "ODY queue script blocked")
+                    return true
+                end
+                local ok, result = pcall(original, source, ...)
+                if not ok then return nil, result end
+                return result
+            end
+            if setGlobalValue(name, wrapper) then installed = installed + 1 end
+        end
+    end
+
+    QueueControl.installed = installed > 0
+    if QueueControl.installed then
+        addLog("OK", "ODY queue filter installed")
+    else
+        addLog("WARN", "ODY queue filter unavailable")
+    end
+    return QueueControl.installed
+end
+
+local function clearTeleportQueue()
+    for _, name in ipairs(CLEAR_QUEUE_NAMES) do
+        local fn = rawGlobal(name)
+        if type(fn) == "function" then
+            local ok, err = pcall(fn)
+            if ok then return true, name end
+        end
+    end
+    return false, "no clear_teleport_queue function"
+end
+
 local function queueOnTeleportScript(source)
-    for _, name in ipairs({ "queue_on_teleport", "queueonteleport", "queueteleport" }) do
+    for _, name in ipairs(QUEUE_NAMES) do
         local fn = rawGlobal(name)
         if type(fn) == "function" then
             local ok, err = pcall(fn, source)
@@ -438,6 +513,7 @@ local function odyArmQueue(placeId, jobId, source)
     -- Keep the queued marker valid Lua even if a payload carried a malformed id.
     local safeJob = targetJob:match("^[%w%-]+$") and targetJob or tostring(game.JobId or "")
     local marker = string.format([[
+%s
 local job = %q
 local place = %d
 local g = (typeof(getgenv) == "function" and getgenv()) or _G
@@ -452,7 +528,15 @@ if type(g) == "table" then
         pcall(function() boot.shutdown("tp guard queued") end)
     end
 end
-]], safeJob, tonumber(placeId) or Config.PLACE_ID)
+]], QUEUE_SENTINEL, safeJob, tonumber(placeId) or Config.PLACE_ID)
+
+    installOdyQueueFilter()
+    local cleared, clearName = clearTeleportQueue()
+    if cleared then
+        addLog("OK", "ODY queue cleared via " .. tostring(clearName))
+    else
+        addLog("WARN", "ODY queue clear skipped: " .. tostring(clearName))
+    end
 
     setGlobalValue("__odyssey_queued", true)
     setGlobalValue("__odyssey_entry_job", targetJob)
@@ -641,6 +725,16 @@ openDeepLink = function(placeId, jobId, source, allowCurrent)
             return false
         end
         addLog("INFO", "Rejoining current server " .. tostring(jobId))
+    end
+
+    if #AJS.found == 0 then
+        local waited = 0
+        while waited < Config.ODY_WAIT do
+            task.wait(0.15)
+            waited = waited + 0.15
+            ajsRefresh("pre-link wait", false)
+            if #AJS.found > 0 then break end
+        end
     end
 
     odyArmQueue(placeId, jobId, "deep link " .. tostring(source or "source"))
@@ -907,6 +1001,8 @@ TeleportService.TeleportInitFailed:Connect(function(_, result, msg)
     addLog("ERR", "Teleport failed: " .. tostring(msg or result))
 end)
 
+installOdyQueueFilter()
+clearTeleportQueue()
 startOdyWatcher()
 local bootPlace, bootJob = currentServer()
 if bootJob then
