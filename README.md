@@ -76,6 +76,7 @@ Each build copies `assets/` next to the executable. The logo is for this README;
 - ODY's script and `queue_on_teleport` are left untouched.
 - Console, warn, rconsole, messagebox, and Roblox `LogService.MessageOut` output is tapped.
 - Plain-text job ids in logs are parsed from UUIDs, `jobId:`, `jobId=`, and `gameInstanceId=`, then driven through the same deep-link path.
+- `__odyssey_entry_job` is read at load, on `AUTO ON`, on `RESCAN ODY`, and every 0.25 s; a changed job id goes through the same deep-link path.
 - Every deep link logs which ODY APIs are present before the join.
 - Deep links are parsed from `gameInstanceId` and `placeId` in live data.
 - Captured jobs appear in a small in-game panel with their own `JOIN` button.

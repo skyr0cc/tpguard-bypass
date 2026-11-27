@@ -327,6 +327,8 @@ local State = {
     jobs = 0,
     logCount = 0,
     seen = {},
+    odyJobs = {},
+    odyState = {},
     lastJob = nil,
     logCapture = false,
 }
@@ -334,6 +336,8 @@ local State = {
 local openDeepLink
 local refreshStatus
 local stopAuto
+local submitPayload
+local checkOdyGlobals
 
 local function setStatus(text, color)
     Status.Text = text
@@ -444,14 +448,20 @@ local function startOdyWatcher()
     local started, err = pcall(function()
         if not task or not task.spawn then error("task.spawn unavailable") end
         task.spawn(function()
+            local apiWait = 0
             while AJS.watching do
-                task.wait(math.max(1, Config.ODY_SCAN))
-                local hadBoot = type(AJS.boot) == "table"
-                local found = ajsRefresh("background", false)
-                if not hadBoot and type(AJS.boot) == "table" then
-                    addLog("OK", "ODY control API found late: __aj_boot")
-                elseif not hadBoot and found then
-                    addLog("OK", "ODY API found late: " .. table.concat(AJS.found, ", "))
+                task.wait(0.25)
+                checkOdyGlobals("background")
+                apiWait = apiWait + 0.25
+                if apiWait >= math.max(1, Config.ODY_SCAN) then
+                    apiWait = 0
+                    local hadBoot = type(AJS.boot) == "table"
+                    local found = ajsRefresh("background", false)
+                    if not hadBoot and type(AJS.boot) == "table" then
+                        addLog("OK", "ODY control API found late: __aj_boot")
+                    elseif not hadBoot and found then
+                        addLog("OK", "ODY API found late: " .. table.concat(AJS.found, ", "))
+                    end
                 end
             end
         end)
@@ -683,13 +693,45 @@ local function submitJobs(data, source)
     task.spawn(function() handleJobs(jobs, source) end)
 end
 
-local function submitPayload(value, source)
+submitPayload = function(value, source)
     if #AJS.found == 0 then ajsRefresh("tap", false) end
     submitJobs(value, source)
     if type(value) == "string" then
         local decoded = decodeJson(value)
         if decoded then submitJobs(decoded, source) end
     end
+end
+
+-- ODY publishes the current feed job in getgenv globals. No hooks and no queue
+-- writes: a changed entry job is fed through the same submit path as a tap.
+checkOdyGlobals = function(source)
+    local job = rawGlobal("__odyssey_entry_job")
+    local queued = rawGlobal("__odyssey_queued")
+    local version = rawGlobal("__odyssey_guard_queue_version")
+    local stateKey = tostring(job) .. "|" .. tostring(queued) .. "|" .. tostring(version)
+    local changed = State.odyState[source] ~= stateKey
+    State.odyState[source] = stateKey
+
+    local hasJob = type(job) == "string" and job:match("^" .. JOB_ID_PATTERN .. "$") ~= nil
+    if not hasJob then
+        if changed then
+            addLog("ODY", string.format(
+                "globals from %s: entry=%s queued=%s qver=%s (no job id)",
+                tostring(source), tostring(job), tostring(queued), tostring(version)))
+        end
+        return
+    end
+
+    if changed then
+        addLog("ODY", string.format(
+            "globals from %s: entry=%s queued=%s qver=%s",
+            tostring(source), job, tostring(queued), tostring(version)))
+    end
+
+    if not State.running or not State.auto then return end
+    if State.odyJobs[job] then return end
+    State.odyJobs[job] = true
+    submitPayload(job, "ODY globals/" .. tostring(source))
 end
 
 -- No function hooks. Executors differ on which functions can be hooked, and a
@@ -776,6 +818,7 @@ local function startAutoJoin()
     AutoBtn.Text = "AUTO ON"
     AutoBtn.TextColor3 = Theme.ok
     refreshStatus()
+    checkOdyGlobals("auto on")
     addLog("INFO", "Live taps armed - request, writefile, clipboard")
     addLog("INFO", "No saved logs are loaded - retry " .. Config.RETRY .. ", delay " .. string.format("%.2f", Config.DELAY) .. "s")
     if #AJS.found > 0 then
@@ -835,6 +878,7 @@ end)
 
 ScanBtn.MouseButton1Click:Connect(function()
     ajsRefresh("rescan button", true)
+    checkOdyGlobals("rescan button")
 end)
 
 local Bubble = make("ImageButton", {
@@ -886,6 +930,7 @@ if bootJob then
 end
 addLog("INFO", "Loaded - live taps installed, saved logs ignored")
 startAutoJoin()
+checkOdyGlobals("load")
 return Config
 )TPGUARD";
 
