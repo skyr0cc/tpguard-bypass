@@ -11,10 +11,32 @@ inline const char* kLuaScript = R"TPGUARD(-- tp guard bi pass - universal feed t
 local okEnv, genv = pcall(function() return getgenv and getgenv() end)
 local env = (okEnv and genv) or _G
 
+local function rawGlobal(name)
+    local ok, value = pcall(function()
+        local found = rawget(env, name)
+        if found == nil and env ~= _G then found = rawget(_G, name) end
+        if found == nil then found = _G[name] end
+        return found
+    end)
+    if ok then return value end
+end
+
+local function findAjsBoot()
+    local boot = rawGlobal("__aj_boot")
+    if type(boot) == "table" then return boot end
+    return nil
+end
+
+local AJS = {
+    boot = findAjsBoot(),
+    stopped = false,
+}
+
 local Config = {
     PLACE_ID    = game.PlaceId,
     DELAY       = __TP_GUARD_DELAY__,
     RETRY       = __TP_GUARD_RETRY__,
+    AJS_STOP    = true,
     MAX_LOGS    = 60,
     LOG_FILE    = "tp_guard/rejoin.txt",
     SERVER_FILE = "tp_guard/server.json",
@@ -354,6 +376,47 @@ local function addLog(level, message, jobData)
     end
 end
 
+-- AJS (__aj_boot) exposes control functions, not request taps. Calling these
+-- before a deep link stops the auto joiner from fighting the current-server
+-- join. Every call is guarded because executors differ on argument handling.
+local function ajsStop(reason)
+    if not Config.AJS_STOP then return false end
+    if type(AJS.boot) ~= "table" then AJS.boot = findAjsBoot() end
+    if type(AJS.boot) ~= "table" then return false end
+    if AJS.stopped then return true end
+
+    local calls = {}
+    local function addCall(name, arg)
+        local ok, fn = pcall(function() return AJS.boot[name] end)
+        if ok and type(fn) == "function" then
+            table.insert(calls, { name = name, fn = fn, arg = arg })
+        end
+    end
+
+    local why = tostring(reason or "tp guard")
+    addCall("set_panel_live", false)
+    addCall("stop", why)
+    addCall("shutdown", why)
+
+    local done = {}
+    local reallyStopped = false
+    for _, call in ipairs(calls) do
+        local ok, err = pcall(call.fn, call.arg)
+        if ok then
+            done[#done + 1] = call.name
+            if call.name == "stop" or call.name == "shutdown" then reallyStopped = true end
+        else
+            addLog("WARN", "AJS " .. call.name .. " failed: " .. tostring(err))
+        end
+    end
+
+    AJS.stopped = reallyStopped
+    if #done > 0 then
+        addLog("OK", "AJS control sent via " .. table.concat(done, ", "))
+    end
+    return AJS.stopped
+end
+
 local function buildLink(placeId, jobId)
     -- Same URI shape as tools/tpguard.bat and tools/tpguard.sh, with the live job id.
     return string.format("roblox://experiences/start?placeId=%d&gameInstanceId=%s",
@@ -437,6 +500,8 @@ openDeepLink = function(placeId, jobId, source, allowCurrent)
         end
         addLog("INFO", "Rejoining current server " .. tostring(jobId))
     end
+
+    ajsStop("deep link " .. tostring(source or "source"))
 
     local link = buildLink(placeId, jobId)
     State.lastJob = { placeId = placeId, jobId = jobId }
@@ -595,6 +660,11 @@ local function startAutoJoin()
     refreshStatus()
     addLog("INFO", "Live taps armed - request, writefile, clipboard")
     addLog("INFO", "No saved logs are loaded - retry " .. Config.RETRY .. ", delay " .. string.format("%.2f", Config.DELAY) .. "s")
+    if type(AJS.boot) == "table" then
+        addLog("INFO", "AJS control API found - stop armed for deep links")
+    else
+        addLog("INFO", "No AJS control API found at load - recheck on deep link")
+    end
 end
 
 stopAuto = function(reason)

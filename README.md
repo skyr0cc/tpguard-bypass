@@ -23,6 +23,7 @@ Windows GUI and executor Lua helper for current-server deep links. Power starts 
 - Generated Lua listens to live `request`, `writefile`, `appendfile`, and `setclipboard` calls. No function hooks, no read-only table writes.
 - No `readfile`, no `listfiles`, no startup sweep, no replay of saved logs. Files are outputs only.
 - Both `REJOIN` and `RECONNECT` force the current server through the same deep link path.
+- Auto-joiner scripts that expose `__aj_boot` are stopped before a deep link via `set_panel_live(false)`, `stop`, and `shutdown`.
 - GUI is a 600×400 layered Win32 window with a DX11/ImGui renderer and smooth wheel scrolling.
 
 ## Build
@@ -69,6 +70,7 @@ Each build copies `assets/` next to the executable. The logo is for this README;
 `src/tp_guard_lua.h` is the single source for the generated script. The panel only substitutes delay and retry.
 
 - Job ids come from live tapped payloads and `game.JobId` only.
+- `__aj_boot` is detected at load and again before each deep link; its control functions are called in a bounded, pcall-guarded pass.
 - Deep links are parsed from `gameInstanceId` and `placeId` in live data.
 - Captured jobs appear in a small in-game panel with their own `JOIN` button.
 - `AUTO ON`, `REJOIN`, `RECONNECT`, and `CLEAR` sit in the header.
