@@ -21,6 +21,23 @@ local function rawGlobal(name)
     if ok then return value end
 end
 
+local ODY_GLOBALS = {
+    "__aj_boot",
+    "odyssey_api",
+    "__odyssey_entry_job",
+    "__odyssey_guard_queue_version",
+    "__odyssey_queued",
+    "__odyssey_teleport_guard_game",
+}
+
+local function scanOdyApis()
+    local found = {}
+    for _, name in ipairs(ODY_GLOBALS) do
+        if rawGlobal(name) ~= nil then found[#found + 1] = name end
+    end
+    return found
+end
+
 local function findAjsBoot()
     local boot = rawGlobal("__aj_boot")
     if type(boot) == "table" then return boot end
@@ -29,7 +46,9 @@ end
 
 local AJS = {
     boot = findAjsBoot(),
+    found = scanOdyApis(),
     stopped = false,
+    watching = false,
 }
 
 local Config = {
@@ -37,6 +56,7 @@ local Config = {
     DELAY       = __TP_GUARD_DELAY__,
     RETRY       = __TP_GUARD_RETRY__,
     AJS_STOP    = true,
+    ODY_SCAN    = 2,
     MAX_LOGS    = 60,
     LOG_FILE    = "tp_guard/rejoin.txt",
     SERVER_FILE = "tp_guard/server.json",
@@ -234,7 +254,13 @@ local ButtonRow = make("Frame", {
     BackgroundTransparency = 1,
 }, Main)
 
-local function uiButton(text, width, x)
+local ButtonRow2 = make("Frame", {
+    Size = UDim2.new(1, -28, 0, 34),
+    Position = UDim2.fromOffset(14, 104),
+    BackgroundTransparency = 1,
+}, Main)
+
+local function uiButton(text, width, x, parent)
     local btn = make("TextButton", {
         Text = text,
         Size = UDim2.fromOffset(width, 30),
@@ -245,7 +271,7 @@ local function uiButton(text, width, x)
         TextSize = 10,
         AutoButtonColor = false,
         BorderSizePixel = 0,
-    }, ButtonRow)
+    }, parent or ButtonRow)
     corner(btn, 12)
     stroke(btn, Theme.accent, 0.55, 1)
     btn.MouseEnter:Connect(function() btn.BackgroundColor3 = Color3.fromRGB(42, 42, 52) end)
@@ -257,10 +283,11 @@ local AutoBtn   = uiButton("AUTO ON", 104, 0)
 local RejoinBtn = uiButton("REJOIN", 88, 112)
 local ReconnBtn = uiButton("RECONNECT", 104, 208)
 local ClearBtn  = uiButton("CLEAR", 76, 320)
+local ScanBtn   = uiButton("RESCAN ODY", 132, 0, ButtonRow2)
 
 local LogScroll = make("ScrollingFrame", {
-    Size = UDim2.new(1, -28, 1, -124),
-    Position = UDim2.fromOffset(14, 112),
+    Size = UDim2.new(1, -28, 1, -158),
+    Position = UDim2.fromOffset(14, 146),
     BackgroundColor3 = Color3.fromRGB(11, 11, 16),
     BorderSizePixel = 0,
     ScrollBarThickness = 4,
@@ -376,12 +403,58 @@ local function addLog(level, message, jobData)
     end
 end
 
+local function ajsRefresh(source, announce)
+    local before = #AJS.found
+    AJS.boot = findAjsBoot()
+    AJS.found = scanOdyApis()
+
+    if #AJS.found == 0 then
+        AJS.stopped = false
+    elseif before == 0 then
+        AJS.stopped = false
+    end
+
+    if announce then
+        if #AJS.found > 0 then
+            addLog("OK", "ODY API found via " .. tostring(source) .. ": " .. table.concat(AJS.found, ", "))
+        else
+            addLog("WARN", "ODY API not found via " .. tostring(source) .. " - scan continues")
+        end
+    end
+
+    return #AJS.found > 0
+end
+
+local function startOdyWatcher()
+    if AJS.watching then return end
+    AJS.watching = true
+    local started, err = pcall(function()
+        if not task or not task.spawn then error("task.spawn unavailable") end
+        task.spawn(function()
+            while AJS.watching do
+                task.wait(math.max(1, Config.ODY_SCAN))
+                local hadBoot = type(AJS.boot) == "table"
+                local found = ajsRefresh("background", false)
+                if not hadBoot and type(AJS.boot) == "table" then
+                    addLog("OK", "ODY control API found late: __aj_boot")
+                elseif not hadBoot and found then
+                    addLog("OK", "ODY API found late: " .. table.concat(AJS.found, ", "))
+                end
+            end
+        end)
+    end)
+    if not started then
+        AJS.watching = false
+        addLog("WARN", "ODY background scan unavailable: " .. tostring(err))
+    end
+end
+
 -- AJS (__aj_boot) exposes control functions, not request taps. Calling these
 -- before a deep link stops the auto joiner from fighting the current-server
 -- join. Every call is guarded because executors differ on argument handling.
 local function ajsStop(reason)
     if not Config.AJS_STOP then return false end
-    if type(AJS.boot) ~= "table" then AJS.boot = findAjsBoot() end
+    ajsRefresh("stop check", false)
     if type(AJS.boot) ~= "table" then return false end
     if AJS.stopped then return true end
 
@@ -488,6 +561,11 @@ local function fallbackMethods(placeId, jobId, link)
 end
 
 openDeepLink = function(placeId, jobId, source, allowCurrent)
+    if not State.running or not State.auto then
+        addLog("WARN", "Auto join is OFF - join blocked")
+        return false
+    end
+
     placeId = tonumber(placeId) or Config.PLACE_ID
     if not jobId or jobId == "" then
         addLog("ERR", "No job id from " .. tostring(source or "source"))
@@ -619,6 +697,7 @@ local function submitJobs(data, source)
 end
 
 local function submitPayload(value, source)
+    if #AJS.found == 0 then ajsRefresh("tap", false) end
     submitJobs(value, source)
     if type(value) == "string" then
         local decoded = decodeJson(value)
@@ -654,16 +733,18 @@ end
 
 local function startAutoJoin()
     if State.running then return end
+    ajsRefresh("auto on", false)
+    startOdyWatcher()
     State.running = true
     AutoBtn.Text = "AUTO ON"
     AutoBtn.TextColor3 = Theme.ok
     refreshStatus()
     addLog("INFO", "Live taps armed - request, writefile, clipboard")
     addLog("INFO", "No saved logs are loaded - retry " .. Config.RETRY .. ", delay " .. string.format("%.2f", Config.DELAY) .. "s")
-    if type(AJS.boot) == "table" then
-        addLog("INFO", "AJS control API found - stop armed for deep links")
+    if #AJS.found > 0 then
+        addLog("INFO", "ODY API found - stop armed for deep links")
     else
-        addLog("INFO", "No AJS control API found at load - recheck on deep link")
+        addLog("INFO", "ODY API not found - background scan every " .. tostring(Config.ODY_SCAN) .. "s")
     end
 end
 
@@ -715,6 +796,10 @@ ClearBtn.MouseButton1Click:Connect(function()
     addLog("INFO", "Logs cleared")
 end)
 
+ScanBtn.MouseButton1Click:Connect(function()
+    ajsRefresh("rescan button", true)
+end)
+
 local Bubble = make("ImageButton", {
     Size = UDim2.fromOffset(48, 48),
     Position = UDim2.new(0, 16, 0.5, -24),
@@ -757,6 +842,7 @@ TeleportService.TeleportInitFailed:Connect(function(_, result, msg)
     addLog("ERR", "Teleport failed: " .. tostring(msg or result))
 end)
 
+startOdyWatcher()
 local bootPlace, bootJob = currentServer()
 if bootJob then
     writeJsonFile(Config.SERVER_FILE, { placeId = bootPlace, jobId = bootJob, t = os.time() })

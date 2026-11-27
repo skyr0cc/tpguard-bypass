@@ -70,10 +70,12 @@ Each build copies `assets/` next to the executable. The logo is for this README;
 `src/tp_guard_lua.h` is the single source for the generated script. The panel only substitutes delay and retry.
 
 - Job ids come from live tapped payloads and `game.JobId` only.
-- `__aj_boot` is detected at load and again before each deep link; its control functions are called in a bounded, pcall-guarded pass.
+- `__aj_boot` and `odyssey_api` are scanned at load, on taps, before deep links, and every 2 seconds for late ODY loads.
+- `RESCAN ODY` in the Lua panel forces an immediate ODY API rescan.
+- Joins are blocked while `AUTO ON` is off.
 - Deep links are parsed from `gameInstanceId` and `placeId` in live data.
 - Captured jobs appear in a small in-game panel with their own `JOIN` button.
-- `AUTO ON`, `REJOIN`, `RECONNECT`, and `CLEAR` sit in the header.
+- `AUTO ON`, `RESCAN ODY`, `REJOIN`, `RECONNECT`, and `CLEAR` sit in the Lua panel.
 - Outputs are written to `tp_guard/server.json` and `tp_guard/rejoin.txt`. Nothing is read back.
 - If the executor refuses the scheme, fallbacks run through `ExperienceService`, `TeleportService`, web start, clipboard, and `GuiService`.
 
