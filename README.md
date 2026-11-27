@@ -69,16 +69,14 @@ Each build copies `assets/` next to the executable. The logo is for this README;
 
 `src/tp_guard_lua.h` is the single source for the generated script. The panel only substitutes delay and retry.
 
-- Job ids come from live tapped payloads and `game.JobId` only.
+- Job ids come from live tapped payloads, logged output, and `game.JobId`.
 - `__aj_boot` and `odyssey_api` are scanned at load, on taps, before deep links, and every 2 seconds for late ODY loads.
 - `RESCAN ODY` in the Lua panel forces an immediate ODY API rescan.
 - Joins are blocked while `AUTO ON` is off.
-- The teleport queue is filtered at load: ODY queue scripts are dropped by source signature.
-- The teleport queue is cleared at load and again before every deep link, then only a tagged TP Guard marker is queued.
-- The marker initializes ODY globals before `AJS stop/shutdown`, so the no-queue teleport guard does not fire.
+- ODY's script and `queue_on_teleport` are left untouched.
 - Console, warn, rconsole, messagebox, and Roblox `LogService.MessageOut` output is tapped.
 - Plain-text job ids in logs are parsed from UUIDs, `jobId:`, `jobId=`, and `gameInstanceId=`, then driven through the same deep-link path.
-- Every deep link logs the armed ODY globals and queue-filter state before the join.
+- Every deep link logs which ODY APIs are present before the join.
 - Deep links are parsed from `gameInstanceId` and `placeId` in live data.
 - Captured jobs appear in a small in-game panel with their own `JOIN` button.
 - `AUTO ON`, `RESCAN ODY`, `REJOIN`, `RECONNECT`, and `CLEAR` sit in the Lua panel.
