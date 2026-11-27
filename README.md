@@ -2,7 +2,7 @@
 
 ![skyro.wtf](https://github.com/skyr0cc/tpguard-bypass/raw/main/assets/skyro-logo.png)
 
-**Credits: @f9nkz on Discord for all testing.**
+**Credits: f9nkz on Discord for all testing.**
 
 Windows GUI and executor Lua helper for current-server deep links. Power starts **ON**. Saved logs are never loaded back in.
 
