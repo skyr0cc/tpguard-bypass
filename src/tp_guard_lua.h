@@ -32,6 +32,7 @@ local CLEAR_QUEUE_NAMES = {
     "clearteleportqueue",
 }
 local QUEUE_SENTINEL = "-- TP_GUARD_ODY_QUEUE_MARKER"
+local JOB_ID_PATTERN = "%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x"
 local ODY_MESSAGE_SIGNS = {
     "ody",
     "odyssey",
@@ -380,7 +381,10 @@ end
 
 local function addLog(level, message, jobData)
     local line = os.date("%H:%M:%S") .. " [" .. level .. "] " .. tostring(message)
+    local wasCapturing = State.logCapture
+    State.logCapture = true
     print("[TP GUARD] " .. line)
+    State.logCapture = wasCapturing
 
     local color = Theme.text
     if level == "WARN" then color = Theme.warn end
@@ -824,6 +828,16 @@ local function scanNode(node, out, seenTables, depth)
         local placeId, jobId = parseLink(node)
         local entry = newJob(placeId, jobId, "link", "tap")
         if entry then table.insert(out, entry) end
+
+        -- Logged job ids arrive as plain UUIDs, not JSON fields or deep links.
+        local loggedJob = node:match(JOB_ID_PATTERN)
+                          or node:match("[Jj]ob[Ii][Dd][:=]%s*([%w%-]+)")
+        local loggedPlace = tonumber(node:match("[Pp][Ll][Aa][Cc][Ee][Ii][Dd][:=]%s*(%d+)"))
+        if loggedJob and loggedJob ~= jobId then
+            local logged = newJob(loggedPlace, loggedJob, "log job", "log")
+            if logged then table.insert(out, logged) end
+        end
+
         local first = node:sub(1, 1)
         if first == "{" or first == "[" then
             local decoded = decodeJson(node)
@@ -911,6 +925,8 @@ local function captureConsole(source, ...)
     local text = table.concat(parts, " ")
     if text == "" or #text > 2048 then return end
 
+    submitPayload(text, source .. " log")
+
     local lowered = text:lower()
     for _, sign in ipairs(ODY_MESSAGE_SIGNS) do
         if string.find(lowered, sign, 1, true) then
@@ -934,6 +950,15 @@ for _, name in ipairs({
             return original(...)
         end))
     end
+end
+
+local okLogService, LogService = pcall(function() return game:GetService("LogService") end)
+if okLogService and LogService and LogService.MessageOut then
+    pcall(function()
+        LogService.MessageOut:Connect(function(message)
+            captureConsole("LogService", message)
+        end)
+    end)
 end
 
 for _, name in ipairs({ "request", "writefile", "appendfile", "setclipboard" }) do
